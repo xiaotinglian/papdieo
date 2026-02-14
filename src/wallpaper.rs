@@ -90,7 +90,7 @@ pub fn run_wallpaper(
         &surface,
         Some(&selected_output),
         zwlr_layer_shell_v1::Layer::Background,
-        "hyprwall".into(),
+        "papdieo".into(),
         &qh,
         (),
     );
@@ -433,7 +433,7 @@ impl FrameRenderer {
             .write(true)
             .create(true)
             .truncate(true)
-            .open("/tmp/hyprwall-buffer")
+            .open("/tmp/papdieo-buffer")
             .context("failed to create shared memory buffer file")?;
         file.set_len(frame_size as u64)?;
 

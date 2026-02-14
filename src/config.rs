@@ -67,5 +67,5 @@ fn default_config_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))?;
 
-    Some(base.join("hyprwall").join("config.toml"))
+    Some(base.join("papdieo").join("config.toml"))
 }

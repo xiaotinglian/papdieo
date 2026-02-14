@@ -12,15 +12,15 @@ use std::{
     time::Duration,
 };
 
-use cli::{Command, HyprwallArgs};
+use cli::{Command, PapdieoArgs};
 use config::FitMode;
 
 fn main() -> Result<()> {
-    let args = HyprwallArgs::parse();
+    let args = PapdieoArgs::parse();
     run(args)
 }
 
-fn run(args: HyprwallArgs) -> Result<()> {
+fn run(args: PapdieoArgs) -> Result<()> {
     let config = config::Config::load_or_default(args.config.as_deref())?;
     let default_fps = config.video_fps.unwrap_or(60);
     let default_fit = config.fit_mode.unwrap_or(FitMode::Cover);
@@ -120,7 +120,7 @@ fn run_renderer(
     }
 
     let exe = std::env::current_exe()?;
-    let log_path = "/tmp/hyprwall.log";
+    let log_path = "/tmp/papdieo.log";
     let log_out = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -176,7 +176,7 @@ fn run_rotate_loop(
     loop {
         let _ = ProcessCommand::new("pkill")
             .arg("-f")
-            .arg("hyprwall run-internal")
+            .arg("papdieo run-internal")
             .status();
 
         let media = picker::pick_random_wallpaper(&media_dir)?;

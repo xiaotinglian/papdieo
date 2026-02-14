@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const STATE_FILE: &str = "/tmp/hyprwall_state";
+const STATE_FILE: &str = "/tmp/papdieo_state";
 
 pub fn list_wallpapers(dir: &Path) -> Result<Vec<PathBuf>> {
     if !dir.exists() {

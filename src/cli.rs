@@ -3,8 +3,8 @@ use crate::config::FitMode;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "hyprwall", version, about = "A Hyprland-compatible wallpaper CLI")]
-pub struct HyprwallArgs {
+#[command(name = "papdieo", version, about = "A Hyprland-compatible wallpaper CLI")]
+pub struct PapdieoArgs {
     #[arg(short, long, help = "Path to config TOML file")]
     pub config: Option<PathBuf>,
 

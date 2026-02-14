@@ -1,6 +1,39 @@
-# hyprwall
+# papdieo
 
 A Rust-based, Hyprland-compatible wallpaper tool.
+
+## Dependencies
+
+### Required
+
+- Rust toolchain (`rustc`, `cargo`) — Rust 1.75+ recommended
+- Wayland session (Hyprland)
+- GStreamer runtime + plugins for video decode
+
+### Arch Linux packages
+
+Install everything needed to build and run:
+
+```bash
+sudo pacman -S --needed \
+	rust \
+	base-devel \
+	pkgconf \
+	wayland \
+	gstreamer \
+	gst-plugins-base \
+	gst-plugins-good \
+	gst-plugins-bad \
+	gst-plugins-ugly \
+	gst-libav
+```
+
+### Optional (for better NVIDIA video decode path)
+
+- `nvidia-utils`
+- `vulkan-icd-loader`
+
+If these are available, `papdieo` can use hardware-accelerated decode (`nvh264dec` / `vulkanh264dec`) before fallback.
 
 ## Features
 
@@ -24,37 +57,37 @@ cargo build --release
 
 ```bash
 # Random wallpaper from default ~/Pictures/Wallpapers
-cargo run -- random
+papdieo random
 
 # Random pick from a specific folder
-cargo run -- random --dir /path/to/media
+papdieo random --dir /path/to/media
 
 # Set explicit wallpaper
-cargo run -- set /path/to/wallpaper.png
+papdieo set /path/to/wallpaper.png
 
 # Set looping video wallpaper
-cargo run -- set /path/to/wallpaper.mp4 --monitor DP-4 --detach
+papdieo set /path/to/wallpaper.mp4 --monitor DP-4 --detach
 
 # Set video wallpaper at explicit FPS
-cargo run -- set /path/to/wallpaper.mp4 --monitor DP-4 --fps 60 --detach
+papdieo set /path/to/wallpaper.mp4 --monitor DP-4 --fps 60 --detach
 
 # Set on a specific monitor
-cargo run -- set /path/to/wallpaper.png --monitor DP-4
+papdieo set /path/to/wallpaper.png --monitor DP-4
 
 # Cycle to next wallpaper
-cargo run -- next
+papdieo next
 
 # Auto-rotate random media every configured interval
-cargo run -- rotate
+papdieo rotate
 
 # Auto-rotate random media from a specific folder every 120s
-cargo run -- rotate --dir /path/to/media --interval 120
+papdieo rotate --dir /path/to/media --interval 120
 
 # List discovered wallpapers
-cargo run -- list
+papdieo list
 
 # Run renderer detached (background)
-cargo run -- set /path/to/wallpaper.png --detach
+papdieo set /path/to/wallpaper.png --detach
 ```
 
 ## Config
@@ -78,13 +111,13 @@ stretch | fill | cover | fit | contain
 Default auto-load path (no `--config` needed):
 
 ```text
-~/.config/hyprwall/config.toml
+~/.config/papdieo/config.toml
 ```
 
 Use it with:
 
 ```bash
-cargo run -- --config /path/to/hyprwall.toml random
+papdieo --config /path/to/papdieo.toml random
 ```
 
 ## Notes

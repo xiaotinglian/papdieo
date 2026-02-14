@@ -1,8 +1,8 @@
 [package]
-name = "hyprwall"
+name = "papdieo"
 version = "0.1.0"
 edition = "2021"
-description = "Hyprland-compatible wallpaper management CLI"
+description = "Hyprland-compatible wallpaper management CLI (papdieo)"
 license = "MIT"
 
 [dependencies]
