@@ -10,29 +10,51 @@ permissions:
   contents: write
 
 jobs:
-  build-and-publish:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_arch: aarch64
+
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libwayland-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Prepare release artifacts
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME:-manual}"
-          DIST="papdieo-${VERSION}-linux-x86_64"
+          DIST="papdieo-${VERSION}-linux-${{ matrix.artifact_arch }}"
           mkdir -p "dist/${DIST}"
-          cp target/release/papdieo "dist/${DIST}/"
+          cp "target/${{ matrix.target }}/release/papdieo" "dist/${DIST}/"
           cp LICENSE "dist/${DIST}/"
           cp README.md "dist/${DIST}/"
           tar -C dist -czf "dist/${DIST}.tar.gz" "${DIST}"
@@ -41,13 +63,25 @@ jobs:
       - name: Upload build artifacts (workflow run)
         uses: actions/upload-artifact@v4
         with:
-          name: papdieo-release-artifacts
+          name: papdieo-release-${{ matrix.artifact_arch }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
 
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: papdieo-release-*
+          path: dist
+          merge-multiple: true
+
       - name: Publish GitHub release assets
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
