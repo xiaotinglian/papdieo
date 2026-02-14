@@ -13,6 +13,7 @@ pub struct Config {
     #[serde(default = "default_wallpaper_dir")]
     pub wallpaper_dir: PathBuf,
     pub monitor_wallpaper_dirs: Option<HashMap<String, PathBuf>>,
+    pub monitor_fit_modes: Option<HashMap<String, FitMode>>,
     pub monitor: Option<String>,
     pub monitors: Option<Vec<String>>,
     pub video_fps: Option<u32>,
@@ -36,6 +37,7 @@ impl Default for Config {
         Self {
             wallpaper_dir: default_wallpaper_dir(),
             monitor_wallpaper_dirs: None,
+            monitor_fit_modes: None,
             monitor: None,
             monitors: None,
             video_fps: Some(60),

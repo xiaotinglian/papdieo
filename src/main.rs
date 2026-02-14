@@ -194,7 +194,6 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
     loop {
         let cfg = config::Config::load_or_default(config_path)?;
         let fps = cfg.video_fps.unwrap_or(60);
-        let fit = cfg.fit_mode.unwrap_or(FitMode::Cover);
         let interval_seconds = cfg
             .daemon_interval_seconds
             .or(cfg.rotation_seconds)
@@ -231,6 +230,7 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
                     continue;
                 }
             };
+            let fit = fit_mode_for_monitor(&cfg, monitor);
             let child = spawn_renderer_child(&media, Some(monitor.as_str()), fps, fit)?;
             monitor_children.insert(monitor.clone(), child);
         }
@@ -383,6 +383,14 @@ fn media_dir_for_monitor<'a>(cfg: &'a config::Config, monitor: &str) -> &'a Path
         .and_then(|map| map.get(monitor))
         .map(|path| path.as_path())
         .unwrap_or(cfg.wallpaper_dir.as_path())
+}
+
+fn fit_mode_for_monitor(cfg: &config::Config, monitor: &str) -> FitMode {
+    cfg.monitor_fit_modes
+        .as_ref()
+        .and_then(|map| map.get(monitor).copied())
+        .or(cfg.fit_mode)
+        .unwrap_or(FitMode::Cover)
 }
 
 fn spawn_renderer_child(

@@ -105,6 +105,7 @@ Optional TOML config:
 
 ```toml
 monitor_wallpaper_dirs = { DP-1 = "/home/youruser/Pictures/Walls-Work", DP-2 = "/home/youruser/Pictures/Walls-Personal" }
+monitor_fit_modes = { DP-1 = "cover", DP-2 = "contain" }
 # Optional fallback for monitors not listed above:
 # wallpaper_dir = "/home/youruser/Pictures/Wallpapers"
 monitor = "DP-4"
@@ -117,6 +118,7 @@ fit_mode = "cover"
 
 If `monitor_wallpaper_dirs` is set, each monitor can have its own media folder.
 For any monitor not listed there, `wallpaper_dir` is used as fallback (or default `~/Pictures/Wallpapers` if omitted).
+If `monitor_fit_modes` is set, each monitor can have its own fit mode; monitors not listed there fall back to global `fit_mode`.
 
 Daemon monitor selection order:
 
