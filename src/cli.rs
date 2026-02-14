@@ -20,6 +20,9 @@ pub enum Command {
         foreground: bool,
     },
 
+    #[command(about = "Restart wallpaper daemon service")]
+    Restart,
+
     #[command(about = "Set a specific wallpaper")]
     Set {
         path: PathBuf,

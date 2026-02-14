@@ -44,6 +44,7 @@ fn run(args: PapdieoArgs) -> Result<()> {
                 start_daemon_service(args.config.as_deref())
             }
         }
+        Some(Command::Restart) => restart_daemon_service(args.config.as_deref()),
         Some(Command::Set {
             path,
             monitor,
@@ -126,6 +127,11 @@ fn run(args: PapdieoArgs) -> Result<()> {
     }
 }
 
+fn restart_daemon_service(config_path: Option<&Path>) -> Result<()> {
+    stop_daemon_service()?;
+    start_daemon_service(config_path)
+}
+
 fn start_daemon_service(config_path: Option<&Path>) -> Result<()> {
     let pid_path = Path::new(DAEMON_PID_PATH);
     if daemon_is_running(pid_path) {
@@ -169,6 +175,70 @@ fn start_daemon_service(config_path: Option<&Path>) -> Result<()> {
         log_path
     );
     Ok(())
+}
+
+fn stop_daemon_service() -> Result<()> {
+    let pid_path = Path::new(DAEMON_PID_PATH);
+    let Ok(content) = std::fs::read_to_string(pid_path) else {
+        cleanup_renderer_processes();
+        println!("papdieo daemon not running");
+        return Ok(());
+    };
+
+    let pid = match content.trim().parse::<u32>() {
+        Ok(pid) => pid,
+        Err(_) => {
+            let _ = std::fs::remove_file(pid_path);
+            cleanup_renderer_processes();
+            return Err(anyhow!("invalid daemon pid file: {}", DAEMON_PID_PATH));
+        }
+    };
+
+    if PathBuf::from(format!("/proc/{pid}")).exists() {
+        let status = ProcessCommand::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()?;
+        if !status.success() {
+            return Err(anyhow!("failed to stop daemon process {}", pid));
+        }
+
+        let mut exited = false;
+        for _ in 0..20 {
+            if !PathBuf::from(format!("/proc/{pid}")).exists() {
+                exited = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        if !exited {
+            let _ = ProcessCommand::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+            for _ in 0..10 {
+                if !PathBuf::from(format!("/proc/{pid}")).exists() {
+                    exited = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+
+        if !exited {
+            return Err(anyhow!("timed out while stopping daemon process {}", pid));
+        }
+    }
+
+    let _ = std::fs::remove_file(pid_path);
+    cleanup_renderer_processes();
+    println!("Stopped papdieo daemon");
+    Ok(())
+}
+
+fn cleanup_renderer_processes() {
+    let _ = ProcessCommand::new("pkill")
+        .args(["-f", "papdieo run-internal"])
+        .status();
 }
 
 fn daemon_is_running(pid_path: &Path) -> bool {
@@ -231,8 +301,19 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
                 }
             };
             let fit = fit_mode_for_monitor(&cfg, monitor);
-            let child = spawn_renderer_child(&media, Some(monitor.as_str()), fps, fit)?;
-            monitor_children.insert(monitor.clone(), child);
+            match spawn_renderer_child(&media, Some(monitor.as_str()), fps, fit) {
+                Ok(child) => {
+                    monitor_children.insert(monitor.clone(), child);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "failed to start renderer for monitor '{}' with '{}': {}",
+                        monitor,
+                        media.display(),
+                        error
+                    );
+                }
+            }
         }
 
         monitor_children.retain(|monitor, child| {
@@ -420,7 +501,19 @@ fn spawn_renderer_child(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    Ok(command.spawn()?)
+    let mut child = command.spawn()?;
+    thread::sleep(Duration::from_millis(450));
+    if let Some(status) = child.try_wait()? {
+        let monitor_label = monitor.unwrap_or("<auto>");
+        return Err(anyhow!(
+            "renderer exited early for monitor '{}' and media '{}' (status: {})",
+            monitor_label,
+            path.display(),
+            status
+        ));
+    }
+
+    Ok(child)
 }
 
 fn run_renderer(

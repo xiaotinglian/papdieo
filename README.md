@@ -95,6 +95,9 @@ papdieo daemon
 # Run daemon in foreground
 papdieo daemon --foreground
 
+# Restart daemon service
+papdieo restart
+
 # Run renderer detached (background)
 papdieo set /path/to/wallpaper.png --detach
 ```

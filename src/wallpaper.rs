@@ -76,12 +76,22 @@ pub fn run_wallpaper(
             global_name: g.name,
             output,
             name: None,
+            description: None,
         });
     }
 
     event_queue
         .roundtrip(&mut state)
         .context("failed to discover monitor names")?;
+
+    for _ in 0..6 {
+        if state.has_resolved_requested_output() || state.all_outputs_have_metadata() {
+            break;
+        }
+        event_queue
+            .roundtrip(&mut state)
+            .context("failed while waiting for monitor metadata")?;
+    }
 
     let selected_output = state.select_output()?;
 
@@ -590,7 +600,9 @@ impl AppState {
     fn new(path: PathBuf, requested_monitor: Option<String>) -> Self {
         Self {
             path,
-            requested_monitor,
+            requested_monitor: requested_monitor
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty()),
             outputs: Vec::new(),
             width: 1920,
             height: 1080,
@@ -599,12 +611,25 @@ impl AppState {
         }
     }
 
+    fn has_resolved_requested_output(&self) -> bool {
+        let Some(requested) = self.requested_monitor.as_deref() else {
+            return true;
+        };
+        self.outputs.iter().any(|out| output_matches_monitor(out, requested))
+    }
+
+    fn all_outputs_have_metadata(&self) -> bool {
+        self.outputs
+            .iter()
+            .all(|out| out.name.is_some() || out.description.is_some())
+    }
+
     fn select_output(&self) -> Result<wl_output::WlOutput> {
         if let Some(requested) = &self.requested_monitor {
             if let Some(found) = self
                 .outputs
                 .iter()
-                .find(|out| out.name.as_deref() == Some(requested.as_str()))
+                .find(|out| output_matches_monitor(out, requested))
             {
                 return Ok(found.output.clone());
             }
@@ -612,7 +637,15 @@ impl AppState {
             let available: Vec<String> = self
                 .outputs
                 .iter()
-                .filter_map(|out| out.name.clone())
+                .filter_map(|out| {
+                    if let Some(name) = &out.name {
+                        Some(name.clone())
+                    } else {
+                        out.description
+                            .as_ref()
+                            .map(|desc| format!("{} (description)", desc))
+                    }
+                })
                 .collect();
             return Err(anyhow!(
                 "requested monitor '{}' was not found (available: {})",
@@ -636,6 +669,27 @@ struct OutputBinding {
     global_name: u32,
     output: wl_output::WlOutput,
     name: Option<String>,
+    description: Option<String>,
+}
+
+fn output_matches_monitor(output: &OutputBinding, requested: &str) -> bool {
+    let requested = requested.trim();
+
+    if let Some(name) = output.name.as_deref() {
+        if name == requested || name.eq_ignore_ascii_case(requested) {
+            return true;
+        }
+    }
+
+    if let Some(description) = output.description.as_deref() {
+        let requested_lower = requested.to_ascii_lowercase();
+        let desc_lower = description.to_ascii_lowercase();
+        if desc_lower == requested_lower || desc_lower.contains(&requested_lower) {
+            return true;
+        }
+    }
+
+    false
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for AppState {
@@ -683,10 +737,18 @@ impl Dispatch<wl_output::WlOutput, u32> for AppState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let wl_output::Event::Name { name } = event {
-            if let Some(output) = state.outputs.iter_mut().find(|o| o.global_name == *data) {
-                output.name = Some(name);
+        match event {
+            wl_output::Event::Name { name } => {
+                if let Some(output) = state.outputs.iter_mut().find(|o| o.global_name == *data) {
+                    output.name = Some(name);
+                }
             }
+            wl_output::Event::Description { description } => {
+                if let Some(output) = state.outputs.iter_mut().find(|o| o.global_name == *data) {
+                    output.description = Some(description);
+                }
+            }
+            _ => {}
         }
     }
 }
