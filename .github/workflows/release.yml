@@ -45,6 +45,12 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Ensure Cargo.lock exists
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            cargo generate-lockfile
+          fi
+
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
