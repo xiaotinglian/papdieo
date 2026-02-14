@@ -2,6 +2,18 @@
 
 This package expects an upstream tag named `v<version>` (example: `v0.1.0`).
 
+## Release notes
+
+- Recent config update: per-monitor fit mode support via `monitor_fit_modes`.
+- Example:
+
+```toml
+monitor_fit_modes = { DP-4 = "cover", HDMI-A-2 = "contain" }
+fit_mode = "cover"
+```
+
+- Fallback behavior: if a monitor is not in `monitor_fit_modes`, global `fit_mode` is used.
+
 ## 1) Create and push a release tag upstream
 
 ```bash
