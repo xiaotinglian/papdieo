@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::Deserialize;
 use std::{
+    collections::HashMap,
     env,
     fs,
     path::{Path, PathBuf},
@@ -9,10 +10,14 @@ use std::{
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_wallpaper_dir")]
     pub wallpaper_dir: PathBuf,
+    pub monitor_wallpaper_dirs: Option<HashMap<String, PathBuf>>,
     pub monitor: Option<String>,
+    pub monitors: Option<Vec<String>>,
     pub video_fps: Option<u32>,
     pub rotation_seconds: Option<u64>,
+    pub daemon_interval_seconds: Option<u64>,
     pub fit_mode: Option<FitMode>,
 }
 
@@ -28,15 +33,22 @@ pub enum FitMode {
 
 impl Default for Config {
     fn default() -> Self {
-        let home = env::var("HOME").unwrap_or_else(|_| ".".into());
         Self {
-            wallpaper_dir: PathBuf::from(home).join("Pictures").join("Wallpapers"),
+            wallpaper_dir: default_wallpaper_dir(),
+            monitor_wallpaper_dirs: None,
             monitor: None,
+            monitors: None,
             video_fps: Some(60),
             rotation_seconds: Some(300),
+            daemon_interval_seconds: Some(300),
             fit_mode: Some(FitMode::Cover),
         }
     }
+}
+
+fn default_wallpaper_dir() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join("Pictures").join("Wallpapers")
 }
 
 impl Config {

@@ -56,6 +56,9 @@ cargo build --release
 ## Usage
 
 ```bash
+# Start daemon service (default behavior with no command)
+papdieo
+
 # Random wallpaper from default ~/Pictures/Wallpapers
 papdieo random
 
@@ -86,6 +89,12 @@ papdieo rotate --dir /path/to/media --interval 120
 # List discovered wallpapers
 papdieo list
 
+# Explicit daemon command (same as running with no subcommand)
+papdieo daemon
+
+# Run daemon in foreground
+papdieo daemon --foreground
+
 # Run renderer detached (background)
 papdieo set /path/to/wallpaper.png --detach
 ```
@@ -95,12 +104,26 @@ papdieo set /path/to/wallpaper.png --detach
 Optional TOML config:
 
 ```toml
-wallpaper_dir = "/home/youruser/Pictures/Wallpapers"
+monitor_wallpaper_dirs = { DP-1 = "/home/youruser/Pictures/Walls-Work", DP-2 = "/home/youruser/Pictures/Walls-Personal" }
+# Optional fallback for monitors not listed above:
+# wallpaper_dir = "/home/youruser/Pictures/Wallpapers"
 monitor = "DP-4"
+monitors = ["DP-1", "DP-2", "HDMI-A-1"]
 video_fps = 60
 rotation_seconds = 300
+daemon_interval_seconds = 300
 fit_mode = "cover"
 ```
+
+If `monitor_wallpaper_dirs` is set, each monitor can have its own media folder.
+For any monitor not listed there, `wallpaper_dir` is used as fallback (or default `~/Pictures/Wallpapers` if omitted).
+
+Daemon monitor selection order:
+
+1. `monitors` from config (if set)
+2. keys from `monitor_wallpaper_dirs` (if set)
+3. single `monitor` from config (if set)
+4. auto-detected monitors from `hyprctl -j monitors`
 
 Supported `fit_mode` values:
 
@@ -126,3 +149,5 @@ papdieo --config /path/to/papdieo.toml random
 - This tool renders wallpaper directly via `wlr-layer-shell` protocol.
 - Video playback requires GStreamer codec plugins (`gst-plugins-good`, `gst-plugins-bad`, `gst-plugins-ugly`, `gst-libav`).
 - On Hyprland, video rendering pauses automatically when an active window is present and resumes on desktop visibility.
+- Daemon mode is single-instance: starting `papdieo` again while daemon is already running will not spawn another daemon.
+- Daemon watches the config file and automatically picks up changes without a manual restart.

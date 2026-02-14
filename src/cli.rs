@@ -9,11 +9,17 @@ pub struct PapdieoArgs {
     pub config: Option<PathBuf>,
 
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    #[command(about = "Start wallpaper daemon service")]
+    Daemon {
+        #[arg(long, help = "Run daemon in foreground (no detach)")]
+        foreground: bool,
+    },
+
     #[command(about = "Set a specific wallpaper")]
     Set {
         path: PathBuf,
@@ -82,4 +88,7 @@ pub enum Command {
         #[arg(long, value_enum)]
         fit: Option<FitMode>,
     },
+
+    #[command(hide = true)]
+    __DaemonInternal,
 }
