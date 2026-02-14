@@ -111,8 +111,14 @@ jobs:
 
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
-          curl -sL "https://github.com/xiaotinglian/papdieo/releases/download/${TAG}/papdieo-${TAG}-linux-x86_64.tar.gz" -o papdieo-x86_64.tar.gz
-          curl -sL "https://github.com/xiaotinglian/papdieo/releases/download/${TAG}/papdieo-${TAG}-linux-aarch64.tar.gz" -o papdieo-aarch64.tar.gz
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+
+          curl -fL --retry 8 --retry-delay 5 --retry-connrefused \
+            "${BASE_URL}/papdieo-${TAG}-linux-x86_64.tar.gz" \
+            -o papdieo-x86_64.tar.gz
+          curl -fL --retry 8 --retry-delay 5 --retry-connrefused \
+            "${BASE_URL}/papdieo-${TAG}-linux-aarch64.tar.gz" \
+            -o papdieo-aarch64.tar.gz
 
           SHA256_X86_64=$(sha256sum papdieo-x86_64.tar.gz | cut -d' ' -f1)
           SHA256_AARCH64=$(sha256sum papdieo-aarch64.tar.gz | cut -d' ' -f1)
@@ -121,6 +127,13 @@ jobs:
               -e "s/\${SHA256_X86_64}/${SHA256_X86_64}/g" \
               -e "s/\${SHA256_AARCH64}/${SHA256_AARCH64}/g" \
               .github/aur-bin/PKGBUILD.template > PKGBUILD
+
+      - name: Validate AUR secrets
+        run: |
+          set -euo pipefail
+          test -n "${{ secrets.AUR_USERNAME }}" || (echo "AUR_USERNAME is empty" && exit 1)
+          test -n "${{ secrets.AUR_EMAIL }}" || (echo "AUR_EMAIL is empty" && exit 1)
+          test -n "${{ secrets.AUR_SSH_PRIVATE_KEY }}" || (echo "AUR_SSH_PRIVATE_KEY is empty" && exit 1)
 
       - name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
