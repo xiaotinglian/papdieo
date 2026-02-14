@@ -94,3 +94,134 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
+
+  publish-aur-bin:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build
+      - publish-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: papdieo-release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+
+      - name: Trust AUR host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - name: Generate AUR metadata files
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          REPO_URL="https://github.com/xiaotinglian/papdieo"
+
+          X86_ARCHIVE="papdieo-${TAG}-linux-x86_64.tar.gz"
+          ARM_ARCHIVE="papdieo-${TAG}-linux-aarch64.tar.gz"
+
+          X86_SHA="$(sha256sum "dist/${X86_ARCHIVE}" | awk '{print $1}')"
+          ARM_SHA="$(sha256sum "dist/${ARM_ARCHIVE}" | awk '{print $1}')"
+
+          cat > PKGBUILD <<'PKG'
+          # Maintainer: lxtshawn <lian1995226@gmail.com>
+          pkgname=papdieo-bin
+          pkgver=@VERSION@
+          pkgrel=1
+          pkgdesc="Hyprland-compatible wallpaper management CLI (prebuilt binary)"
+          arch=('x86_64' 'aarch64')
+          url="@REPO_URL@"
+          license=('MIT')
+          depends=(
+            'gstreamer'
+            'gst-plugins-base'
+            'gst-plugins-good'
+            'gst-plugins-bad'
+            'gst-plugins-ugly'
+            'gst-libav'
+            'wayland'
+            'hyprland'
+          )
+          provides=('papdieo')
+          conflicts=('papdieo' 'papdieo-git')
+
+          source_x86_64=("$url/releases/download/v$pkgver/papdieo-v$pkgver-linux-x86_64.tar.gz")
+          source_aarch64=("$url/releases/download/v$pkgver/papdieo-v$pkgver-linux-aarch64.tar.gz")
+          sha256sums_x86_64=('@X86_SHA@')
+          sha256sums_aarch64=('@ARM_SHA@')
+
+          package() {
+            local dist_dir="papdieo-v$pkgver-linux-$CARCH"
+
+            install -Dm755 "$srcdir/$dist_dir/papdieo" "$pkgdir/usr/bin/papdieo"
+            install -Dm644 "$srcdir/$dist_dir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+            install -Dm644 "$srcdir/$dist_dir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+          }
+          PKG
+
+          sed -i \
+            -e "s|@VERSION@|${VERSION}|g" \
+            -e "s|@REPO_URL@|${REPO_URL}|g" \
+            -e "s|@X86_SHA@|${X86_SHA}|g" \
+            -e "s|@ARM_SHA@|${ARM_SHA}|g" \
+            PKGBUILD
+
+          cat > .SRCINFO <<SRC
+          pkgbase = papdieo-bin
+                  pkgdesc = Hyprland-compatible wallpaper management CLI (prebuilt binary)
+                  pkgver = ${VERSION}
+                  pkgrel = 1
+                  url = ${REPO_URL}
+                  arch = x86_64
+                  arch = aarch64
+                  license = MIT
+                  depends = gstreamer
+                  depends = gst-plugins-base
+                  depends = gst-plugins-good
+                  depends = gst-plugins-bad
+                  depends = gst-plugins-ugly
+                  depends = gst-libav
+                  depends = wayland
+                  depends = hyprland
+                  provides = papdieo
+                  conflicts = papdieo
+                  conflicts = papdieo-git
+                  source_x86_64 = ${REPO_URL}/releases/download/v${VERSION}/papdieo-v${VERSION}-linux-x86_64.tar.gz
+                  sha256sums_x86_64 = ${X86_SHA}
+                  source_aarch64 = ${REPO_URL}/releases/download/v${VERSION}/papdieo-v${VERSION}-linux-aarch64.tar.gz
+                  sha256sums_aarch64 = ${ARM_SHA}
+
+          pkgname = papdieo-bin
+          SRC
+
+      - name: Push to AUR
+        run: |
+          set -euo pipefail
+
+          git clone ssh://aur@aur.archlinux.org/papdieo-bin.git aur-repo
+          cp PKGBUILD .SRCINFO aur-repo/
+
+          cd aur-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add PKGBUILD .SRCINFO
+
+          if git diff --cached --quiet; then
+            echo "No AUR changes to push"
+            exit 0
+          fi
+
+          git commit -m "Update papdieo-bin to ${GITHUB_REF_NAME}"
+          git push origin master
