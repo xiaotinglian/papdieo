@@ -23,6 +23,7 @@ use config::FitMode;
 const DAEMON_PID_PATH: &str = "/tmp/papdieo-daemon.pid";
 const DAEMON_LOG_PATH: &str = "/tmp/papdieo-daemon.log";
 const DAEMON_LOCK_PATH: &str = "/tmp/papdieo-daemon.lock";
+const DAEMON_STARTUP_RETRY_SECONDS: u64 = 3;
 
 fn main() -> Result<()> {
     let args = PapdieoArgs::parse();
@@ -281,6 +282,8 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
             continue;
         }
 
+        let mut launched_any_renderer = false;
+
         for monitor in monitors.iter() {
             if let Some(mut old_child) = monitor_children.remove(monitor) {
                 let _ = old_child.kill();
@@ -304,6 +307,7 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
             match spawn_renderer_child(&media, Some(monitor.as_str()), fps, fit) {
                 Ok(child) => {
                     monitor_children.insert(monitor.clone(), child);
+                    launched_any_renderer = true;
                 }
                 Err(error) => {
                     eprintln!(
@@ -326,8 +330,14 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
             }
         });
 
+        let wait_duration = if launched_any_renderer {
+            interval
+        } else {
+            Duration::from_secs(DAEMON_STARTUP_RETRY_SECONDS)
+        };
+
         wait_for_interval_or_config_change(
-            interval,
+            wait_duration,
             watched_config_path.as_deref(),
             &mut observed_config_mtime,
         );
