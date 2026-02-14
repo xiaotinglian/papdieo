@@ -52,7 +52,7 @@ jobs:
           fi
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Prepare release artifacts
         run: |
