@@ -10,6 +10,7 @@ use std::{
     fs::File,
     fs::OpenOptions,
     os::fd::AsFd,
+    process,
     process::Command,
     path::{Path, PathBuf},
     sync::{
@@ -437,15 +438,17 @@ impl FrameRenderer {
     ) -> Result<Self> {
         let stride = (width * 4) as i32;
         let frame_size = (height as i32 * stride) as usize;
+        let buffer_path = std::env::temp_dir().join(format!("papdieo-buffer-{}", process::id()));
 
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(true)
-            .open("/tmp/papdieo-buffer")
+            .open(&buffer_path)
             .context("failed to create shared memory buffer file")?;
         file.set_len(frame_size as u64)?;
+        let _ = std::fs::remove_file(&buffer_path);
 
         let mmap = unsafe { MmapMut::map_mut(&file) }.context("failed to map shared memory")?;
 
