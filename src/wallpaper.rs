@@ -187,14 +187,22 @@ fn play_video_loop(
     let frame_timeout_ms = (1000 / fps.max(1)).max(4) as u64;
 
     let descriptions = [
+        // NVIDIA fast path
         format!(
             "filesrc location=\"{}\" ! qtdemux ! h264parse ! nvh264dec ! videoconvert ! videoscale{} ! videorate ! video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! appsink name=sink sync=true max-buffers=1 drop=true",
             location, videoscale_options(fit_mode), width, height, fps
         ),
+        // Intel/AMD VA-API decode to lower CPU usage on laptops
+        format!(
+            "filesrc location=\"{}\" ! qtdemux ! h264parse ! vaapih264dec ! vaapipostproc ! video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! appsink name=sink sync=true max-buffers=1 drop=true",
+            location, width, height, fps
+        ),
+        // Generic Vulkan decode
         format!(
             "filesrc location=\"{}\" ! qtdemux ! h264parse ! vulkanh264dec ! videoconvert ! videoscale{} ! videorate ! video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! appsink name=sink sync=true max-buffers=1 drop=true",
             location, videoscale_options(fit_mode), width, height, fps
         ),
+        // Fallback software decode
         format!(
             "filesrc location=\"{}\" ! decodebin ! videoconvert ! videoscale{} ! videorate ! video/x-raw,format=BGRx,width={},height={},framerate={}/1 ! appsink name=sink sync=true max-buffers=1 drop=true",
             location, videoscale_options(fit_mode), width, height, fps
@@ -304,8 +312,13 @@ fn run_video_pipeline(
         return Err(anyhow!("no initial video frame from pipeline"));
     };
 
-    let initial_bytes = bgrx_from_sample(&initial_sample, width as usize, height as usize)?;
-    draw_video_frame(&initial_bytes, surface, renderer)?;
+    write_sample_frame(
+        &initial_sample,
+        surface,
+        renderer,
+        width as usize,
+        height as usize,
+    )?;
 
     let mut is_paused = false;
     let mut last_visibility_refresh = Instant::now();
@@ -329,8 +342,7 @@ fn run_video_pipeline(
 
         if should_render {
             if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(frame_timeout_ms)) {
-                let bytes = bgrx_from_sample(&sample, width as usize, height as usize)?;
-                draw_video_frame(&bytes, surface, renderer)?;
+                write_sample_frame(&sample, surface, renderer, width as usize, height as usize)?;
             }
         } else {
             std::thread::sleep(Duration::from_millis(120));
@@ -362,41 +374,14 @@ fn run_video_pipeline(
     Ok(())
 }
 
-fn bgrx_from_sample(sample: &gst::Sample, width: usize, height: usize) -> Result<Vec<u8>> {
-    let buffer = sample
-        .buffer()
-        .ok_or_else(|| anyhow!("video sample missing buffer"))?;
-    let map = buffer
-        .map_readable()
-        .map_err(|_| anyhow!("failed to map video buffer"))?;
-
-    let caps = sample
-        .caps()
-        .ok_or_else(|| anyhow!("video sample missing caps"))?;
-    let info = gst_video::VideoInfo::from_caps(caps)
-        .map_err(|_| anyhow!("failed to parse video caps"))?;
-
-    let stride = info.stride()[0] as usize;
-    let src = map.as_slice();
-    let mut out = vec![0_u8; width * height * 4];
-
-    for row in 0..height {
-        let src_start = row * stride;
-        let src_end = src_start + width * 4;
-        let dst_start = row * width * 4;
-        let dst_end = dst_start + width * 4;
-        out[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
-    }
-
-    Ok(out)
-}
-
-fn draw_video_frame(
-    bgrx_bytes: &[u8],
+fn write_sample_frame(
+    sample: &gst::Sample,
     surface: &wl_surface::WlSurface,
     renderer: &mut FrameRenderer,
+    width: usize,
+    height: usize,
 ) -> Result<()> {
-    renderer.write_bgrx_frame(bgrx_bytes)?;
+    renderer.write_sample_bgrx(sample, width, height)?;
 
     surface.attach(Some(&renderer.buffer), 0, 0);
     surface.damage_buffer(0, 0, renderer.width as i32, renderer.height as i32);
@@ -474,12 +459,44 @@ impl FrameRenderer {
         })
     }
 
-    fn write_bgrx_frame(&mut self, bgrx: &[u8]) -> Result<()> {
-        if bgrx.len() > self.frame_size {
-            return Err(anyhow!("frame is larger than renderer buffer"));
+    fn write_sample_bgrx(
+        &mut self,
+        sample: &gst::Sample,
+        width: usize,
+        height: usize,
+    ) -> Result<()> {
+        let buffer = sample
+            .buffer()
+            .ok_or_else(|| anyhow!("video sample missing buffer"))?;
+        let map = buffer
+            .map_readable()
+            .map_err(|_| anyhow!("failed to map video buffer"))?;
+
+        let caps = sample
+            .caps()
+            .ok_or_else(|| anyhow!("video sample missing caps"))?;
+        let info = gst_video::VideoInfo::from_caps(caps)
+            .map_err(|_| anyhow!("failed to parse video caps"))?;
+
+        let stride = info.stride()[0] as usize;
+        let src = map.as_slice();
+        let row_bytes = width * 4;
+
+        if row_bytes * height > self.frame_size {
+            return Err(anyhow!("video frame larger than renderer buffer"));
         }
 
-        self.mmap[..bgrx.len()].copy_from_slice(bgrx);
+        for row in 0..height {
+            let src_start = row * stride;
+            let dst_start = row * row_bytes;
+            let src_end = src_start + row_bytes;
+            let dst_end = dst_start + row_bytes;
+            if src_end > src.len() {
+                return Err(anyhow!("video frame stride exceeds buffer"));
+            }
+            self.mmap[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
+        }
+
         Ok(())
     }
 
@@ -556,6 +573,8 @@ fn resolve_monitor_id(target_monitor_name: Option<&str>) -> Option<i64> {
 }
 
 fn query_should_render(target_monitor_id: Option<i64>) -> Option<bool> {
+    let active_workspace_id = active_workspace_id(target_monitor_id)?;
+
     let output = Command::new("hyprctl")
         .args(["-j", "clients"])
         .output()
@@ -567,7 +586,7 @@ fn query_should_render(target_monitor_id: Option<i64>) -> Option<bool> {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let clients = value.as_array()?;
 
-    let has_relevant_window = clients.iter().any(|client| {
+    let has_window_on_active_workspace = clients.iter().any(|client| {
         let mapped = client
             .get("mapped")
             .and_then(|v| v.as_bool())
@@ -580,13 +599,44 @@ fn query_should_render(target_monitor_id: Option<i64>) -> Option<bool> {
             return false;
         }
 
-        match target_monitor_id {
-            Some(target_id) => client.get("monitor").and_then(|v| v.as_i64()) == Some(target_id),
-            None => true,
-        }
+        let workspace_id = client
+            .get("workspace")
+            .and_then(|ws| ws.get("id"))
+            .and_then(|id| id.as_i64());
+
+        workspace_id == Some(active_workspace_id)
     });
 
-    Some(!has_relevant_window)
+    Some(!has_window_on_active_workspace)
+}
+
+fn active_workspace_id(target_monitor_id: Option<i64>) -> Option<i64> {
+    let output = Command::new("hyprctl")
+        .args(["-j", "monitors"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let monitors = value.as_array()?;
+
+    let monitor = if let Some(target_id) = target_monitor_id {
+        monitors
+            .iter()
+            .find(|m| m.get("id").and_then(|v| v.as_i64()) == Some(target_id))
+    } else {
+        monitors
+            .iter()
+            .find(|m| m.get("focused").and_then(|v| v.as_bool()) == Some(true))
+            .or_else(|| monitors.first())
+    }?;
+
+    monitor
+        .get("activeWorkspace")
+        .and_then(|ws| ws.get("id"))
+        .and_then(|id| id.as_i64())
 }
 
 struct AppState {
