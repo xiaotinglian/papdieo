@@ -83,7 +83,10 @@ pub enum Command {
 
     #[command(hide = true)]
     __RunInternal {
-        path: PathBuf,
+        #[arg(required_unless_present = "assignments")]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        assignments: Option<String>,
         #[arg(long)]
         monitor: Option<String>,
         #[arg(long)]
@@ -94,4 +97,67 @@ pub enum Command {
 
     #[command(hide = true)]
     __DaemonInternal,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, PapdieoArgs};
+    use clap::Parser;
+
+    #[test]
+    fn run_internal_accepts_assignments_without_path() {
+        let args = PapdieoArgs::try_parse_from([
+            "papdieo",
+            "run-internal",
+            "--assignments",
+            "[{\"monitor\":\"DP-1\",\"path\":\"/tmp/a.png\",\"fit\":\"cover\"}]",
+            "--fps",
+            "60",
+        ])
+        .expect("run-internal with assignments should parse");
+
+        match args.command {
+            Some(Command::__RunInternal {
+                path,
+                assignments,
+                fps,
+                ..
+            }) => {
+                assert!(path.is_none());
+                assert!(assignments.is_some());
+                assert_eq!(fps, Some(60));
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn run_internal_accepts_legacy_path_mode() {
+        let args = PapdieoArgs::try_parse_from([
+            "papdieo",
+            "run-internal",
+            "/tmp/a.png",
+            "--monitor",
+            "DP-1",
+            "--fps",
+            "30",
+        ])
+        .expect("run-internal with path should parse");
+
+        match args.command {
+            Some(Command::__RunInternal {
+                path,
+                assignments,
+                monitor,
+                fps,
+                ..
+            }) => {
+                assert_eq!(path.as_deref().and_then(|p| p.to_str()), Some("/tmp/a.png"));
+                assert!(assignments.is_none());
+                assert_eq!(monitor.as_deref(), Some("DP-1"));
+                assert_eq!(fps, Some(30));
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
 }

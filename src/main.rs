@@ -6,13 +6,17 @@ mod wallpaper;
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use fs2::FileExt;
+use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
     env,
     fs::File,
     fs::OpenOptions,
     path::{Path, PathBuf},
-    process::{Child, Command as ProcessCommand, Stdio},
+    process::{Command as ProcessCommand, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread,
     time::{Duration, SystemTime},
 };
@@ -24,6 +28,13 @@ const DAEMON_PID_PATH: &str = "/tmp/papdieo-daemon.pid";
 const DAEMON_LOG_PATH: &str = "/tmp/papdieo-daemon.log";
 const DAEMON_LOCK_PATH: &str = "/tmp/papdieo-daemon.lock";
 const DAEMON_STARTUP_RETRY_SECONDS: u64 = 3;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MonitorAssignment {
+    monitor: String,
+    path: PathBuf,
+    fit: FitMode,
+}
 
 fn main() -> Result<()> {
     let args = PapdieoArgs::parse();
@@ -115,17 +126,112 @@ fn run(args: PapdieoArgs) -> Result<()> {
         }
         Some(Command::__RunInternal {
             path,
+            assignments,
             monitor,
             fps,
             fit,
-        }) => wallpaper::run_wallpaper(
-            path,
-            monitor.as_deref(),
-            fps.unwrap_or(default_fps),
-            fit.unwrap_or(default_fit),
-        ),
+        }) => {
+            let resolved_fps = fps.unwrap_or(default_fps);
+            if let Some(assignments_json) = assignments {
+                let assignments: Vec<MonitorAssignment> = serde_json::from_str(&assignments_json)
+                    .map_err(|e| anyhow!("invalid internal assignments payload: {}", e))?;
+                return run_wallpaper_assignments(assignments, resolved_fps);
+            }
+
+            let path = path.ok_or_else(|| anyhow!("missing wallpaper path for run-internal"))?;
+            wallpaper::run_wallpaper(
+                path,
+                monitor.as_deref(),
+                resolved_fps,
+                fit.unwrap_or(default_fit),
+            )
+        }
         Some(Command::__DaemonInternal) => run_daemon_loop(args.config.as_deref()),
     }
+}
+
+fn run_wallpaper_assignments(assignments: Vec<MonitorAssignment>, fps: u32) -> Result<()> {
+    run_wallpaper_assignments_cancellable(assignments, fps, None)
+}
+
+fn run_wallpaper_assignments_cancellable(
+    assignments: Vec<MonitorAssignment>,
+    fps: u32,
+    stop_signal: Option<Arc<AtomicBool>>,
+) -> Result<()> {
+    if assignments.is_empty() {
+        return Err(anyhow!("no monitor assignments provided"));
+    }
+
+    let mut workers = Vec::with_capacity(assignments.len());
+    for assignment in assignments {
+        let monitor = assignment.monitor.clone();
+        let worker_stop = stop_signal.clone();
+        workers.push((monitor, thread::spawn(move || {
+            wallpaper::run_wallpaper_with_stop(
+                assignment.path,
+                Some(assignment.monitor.as_str()),
+                fps,
+                assignment.fit,
+                worker_stop.as_deref(),
+            )
+        })));
+    }
+
+    // Each worker should keep running while wallpaper is active; if one exits,
+    // fail fast so daemon can retry the full assignment set.
+    loop {
+        if stop_signal
+            .as_ref()
+            .map(|signal| signal.load(Ordering::Relaxed))
+            .unwrap_or(false)
+        {
+            break;
+        }
+
+        let mut idx = 0;
+        while idx < workers.len() {
+            if workers[idx].1.is_finished() {
+                let (monitor, worker) = workers.remove(idx);
+                let result = worker.join().map_err(|_| {
+                    anyhow!("renderer thread panicked for monitor '{}'", monitor)
+                })?;
+                match result {
+                    Ok(()) => {
+                        return Err(anyhow!(
+                            "renderer thread exited unexpectedly for monitor '{}'",
+                            monitor
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(anyhow!(
+                            "renderer thread failed for monitor '{}': {}",
+                            monitor,
+                            error
+                        ));
+                    }
+                }
+            }
+            idx += 1;
+        }
+
+        thread::sleep(Duration::from_millis(250));
+    }
+
+    for (monitor, worker) in workers {
+        let result = worker
+            .join()
+            .map_err(|_| anyhow!("renderer thread panicked for monitor '{}'", monitor))?;
+        if let Err(error) = result {
+            return Err(anyhow!(
+                "renderer thread failed for monitor '{}': {}",
+                monitor,
+                error
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn restart_daemon_service(config_path: Option<&Path>) -> Result<()> {
@@ -256,7 +362,6 @@ fn daemon_is_running(pid_path: &Path) -> bool {
 fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
     let _daemon_lock = acquire_daemon_lock()?;
 
-    let mut monitor_children: HashMap<String, Child> = HashMap::new();
     let watched_config_path = resolve_config_watch_path(config_path);
     let mut observed_config_mtime = watched_config_path
         .as_ref()
@@ -265,14 +370,15 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
     loop {
         let cfg = config::Config::load_or_default(config_path)?;
         let fps = cfg.video_fps.unwrap_or(60);
-        let interval_seconds = cfg
+        let configured_interval_seconds = cfg
             .daemon_interval_seconds
             .or(cfg.rotation_seconds)
             .unwrap_or(300)
             .max(1);
-        let interval = Duration::from_secs(interval_seconds);
+        let interval = Duration::from_secs(configured_interval_seconds);
 
         let monitors = configured_or_detected_monitors(&cfg)?;
+        warn_unknown_monitor_map_keys(&cfg, &monitors);
         if monitors.is_empty() {
             wait_for_interval_or_config_change(
                 Duration::from_secs(5),
@@ -282,14 +388,9 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
             continue;
         }
 
-        let mut launched_any_renderer = false;
+        let mut assignments = Vec::new();
 
         for monitor in monitors.iter() {
-            if let Some(mut old_child) = monitor_children.remove(monitor) {
-                let _ = old_child.kill();
-                let _ = old_child.wait();
-            }
-
             let media_dir = media_dir_for_monitor(&cfg, monitor);
             let media = match picker::pick_random_wallpaper(media_dir) {
                 Ok(media) => media,
@@ -304,43 +405,98 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
                 }
             };
             let fit = fit_mode_for_monitor(&cfg, monitor);
-            match spawn_renderer_child(&media, Some(monitor.as_str()), fps, fit) {
-                Ok(child) => {
-                    monitor_children.insert(monitor.clone(), child);
-                    launched_any_renderer = true;
+            assignments.push(MonitorAssignment {
+                monitor: monitor.clone(),
+                path: media,
+                fit,
+            });
+        }
+
+        let mut launched_any_renderer = false;
+
+        if !assignments.is_empty() {
+            launched_any_renderer = true;
+            let stop_signal = Arc::new(AtomicBool::new(false));
+            let worker_stop_signal = Arc::clone(&stop_signal);
+            let worker = thread::spawn(move || {
+                run_wallpaper_assignments_cancellable(assignments, fps, Some(worker_stop_signal))
+            });
+
+            let mut elapsed = Duration::ZERO;
+            let check_every = Duration::from_secs(1);
+            while elapsed < interval {
+                if worker.is_finished() {
+                    break;
                 }
-                Err(error) => {
-                    eprintln!(
-                        "failed to start renderer for monitor '{}' with '{}': {}",
-                        monitor,
-                        media.display(),
-                        error
-                    );
+
+                let remaining = interval.saturating_sub(elapsed);
+                let sleep_for = remaining.min(check_every);
+                thread::sleep(sleep_for);
+                elapsed += sleep_for;
+
+                let Some(path) = watched_config_path.as_deref() else {
+                    continue;
+                };
+
+                let current_mtime = config_file_modified_time(path);
+                if current_mtime != observed_config_mtime {
+                    observed_config_mtime = current_mtime;
+                    break;
+                }
+            }
+
+            stop_signal.store(true, Ordering::Relaxed);
+
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    eprintln!("failed to run renderer assignments in daemon process: {}", error);
+                }
+                Err(_) => {
+                    eprintln!("renderer assignment worker panicked");
                 }
             }
         }
 
-        monitor_children.retain(|monitor, child| {
-            if monitors.contains(monitor) {
-                true
-            } else {
-                let _ = child.kill();
-                let _ = child.wait();
-                false
-            }
-        });
+        if !launched_any_renderer {
+            wait_for_interval_or_config_change(
+                Duration::from_secs(DAEMON_STARTUP_RETRY_SECONDS),
+                watched_config_path.as_deref(),
+                &mut observed_config_mtime,
+            );
+        }
+    }
+}
 
-        let wait_duration = if launched_any_renderer {
-            interval
-        } else {
-            Duration::from_secs(DAEMON_STARTUP_RETRY_SECONDS)
-        };
+fn warn_unknown_monitor_map_keys(cfg: &config::Config, active_monitors: &[String]) {
+    let active: std::collections::HashSet<&str> = active_monitors.iter().map(String::as_str).collect();
 
-        wait_for_interval_or_config_change(
-            wait_duration,
-            watched_config_path.as_deref(),
-            &mut observed_config_mtime,
-        );
+    if let Some(map) = cfg.monitor_wallpaper_dirs.as_ref() {
+        let unknown: Vec<&str> = map
+            .keys()
+            .map(String::as_str)
+            .filter(|k| !active.contains(k.trim()))
+            .collect();
+        if !unknown.is_empty() {
+            eprintln!(
+                "warning: monitor_wallpaper_dirs has unknown monitor keys: {}",
+                unknown.join(", ")
+            );
+        }
+    }
+
+    if let Some(map) = cfg.monitor_fit_modes.as_ref() {
+        let unknown: Vec<&str> = map
+            .keys()
+            .map(String::as_str)
+            .filter(|k| !active.contains(k.trim()))
+            .collect();
+        if !unknown.is_empty() {
+            eprintln!(
+                "warning: monitor_fit_modes has unknown monitor keys: {}",
+                unknown.join(", ")
+            );
+        }
     }
 }
 
@@ -424,6 +580,28 @@ fn configured_or_detected_monitors(cfg: &config::Config) -> Result<Vec<String>> 
         from_map.sort();
         from_map.dedup();
         if !from_map.is_empty() {
+            let detected = detect_monitors()?;
+            if !detected.is_empty() {
+                let detected_set: std::collections::HashSet<&str> =
+                    detected.iter().map(String::as_str).collect();
+                let mut intersection: Vec<String> = from_map
+                    .iter()
+                    .filter(|m| detected_set.contains(m.as_str()))
+                    .cloned()
+                    .collect();
+
+                if intersection.is_empty() {
+                    eprintln!(
+                        "warning: monitor_wallpaper_dirs keys do not match detected monitors; using detected monitors instead"
+                    );
+                    return Ok(detected);
+                }
+
+                intersection.sort();
+                intersection.dedup();
+                return Ok(intersection);
+            }
+
             return Ok(from_map);
         }
     }
@@ -482,48 +660,6 @@ fn fit_mode_for_monitor(cfg: &config::Config, monitor: &str) -> FitMode {
         .and_then(|map| map.get(monitor).copied())
         .or(cfg.fit_mode)
         .unwrap_or(FitMode::Cover)
-}
-
-fn spawn_renderer_child(
-    path: &Path,
-    monitor: Option<&str>,
-    fps: u32,
-    fit: FitMode,
-) -> Result<Child> {
-    let exe = std::env::current_exe()?;
-    let mut command = ProcessCommand::new(exe);
-    command.arg("run-internal").arg(path);
-    if let Some(mon) = monitor {
-        command.arg("--monitor").arg(mon);
-    }
-    command
-        .arg("--fps")
-        .arg(fps.to_string())
-        .arg("--fit")
-        .arg(match fit {
-            FitMode::Stretch => "stretch",
-            FitMode::Fill => "fill",
-            FitMode::Cover => "cover",
-            FitMode::Fit => "fit",
-            FitMode::Contain => "contain",
-        })
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    let mut child = command.spawn()?;
-    thread::sleep(Duration::from_millis(450));
-    if let Some(status) = child.try_wait()? {
-        let monitor_label = monitor.unwrap_or("<auto>");
-        return Err(anyhow!(
-            "renderer exited early for monitor '{}' and media '{}' (status: {})",
-            monitor_label,
-            path.display(),
-            status
-        ));
-    }
-
-    Ok(child)
 }
 
 fn run_renderer(

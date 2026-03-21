@@ -130,6 +130,10 @@ Daemon monitor selection order:
 3. single `monitor` from config (if set)
 4. auto-detected monitors from `hyprctl -j monitors`
 
+When `monitor_wallpaper_dirs` is used and Hyprland monitor detection is available,
+unknown keys are ignored and only matching detected monitor names are used. If none
+of the configured keys match, papdieo falls back to detected monitor names.
+
 Supported `fit_mode` values:
 
 ```text
@@ -156,3 +160,4 @@ papdieo --config /path/to/papdieo.toml random
 - On Hyprland, video rendering pauses automatically when an active window is present and resumes on desktop visibility.
 - Daemon mode is single-instance: starting `papdieo` again while daemon is already running will not spawn another daemon.
 - Daemon watches the config file and automatically picks up changes without a manual restart.
+- Daemon now runs rendering in-process (single papdieo PID): monitor assignments restart on interval/config change without spawning an extra papdieo renderer process.

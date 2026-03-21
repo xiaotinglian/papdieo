@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::ValueEnum;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     env,
@@ -22,7 +22,7 @@ pub struct Config {
     pub fit_mode: Option<FitMode>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, ValueEnum)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum FitMode {
     Stretch,

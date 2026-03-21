@@ -37,6 +37,16 @@ pub fn run_wallpaper(
     fps: u32,
     fit_mode: FitMode,
 ) -> Result<()> {
+    run_wallpaper_with_stop(path, monitor_name, fps, fit_mode, None)
+}
+
+pub fn run_wallpaper_with_stop(
+    path: PathBuf,
+    monitor_name: Option<&str>,
+    fps: u32,
+    fit_mode: FitMode,
+    stop_signal: Option<&AtomicBool>,
+) -> Result<()> {
     if !path.exists() {
         return Err(anyhow!("wallpaper does not exist: {}", path.display()));
     }
@@ -117,9 +127,23 @@ pub fn run_wallpaper(
     surface.commit();
 
     while !state.configured {
+        if stop_signal
+            .map(|signal| signal.load(Ordering::Relaxed))
+            .unwrap_or(false)
+        {
+            state.exit = true;
+            break;
+        }
         event_queue
             .blocking_dispatch(&mut state)
             .context("failed during initial Wayland dispatch")?;
+    }
+
+    if stop_signal
+        .map(|signal| signal.load(Ordering::Relaxed))
+        .unwrap_or(false)
+    {
+        return Ok(());
     }
 
     let mut frame_renderer = FrameRenderer::new(state.width.max(1), state.height.max(1), &shm, &qh)?;
@@ -133,13 +157,23 @@ pub fn run_wallpaper(
             &mut state,
             fps.max(1),
             fit_mode,
+            stop_signal,
         )?;
     } else {
         draw_image(&state, &surface, &mut frame_renderer, fit_mode)?;
         while !state.exit {
+            if stop_signal
+                .map(|signal| signal.load(Ordering::Relaxed))
+                .unwrap_or(false)
+            {
+                state.exit = true;
+                break;
+            }
             event_queue
-                .blocking_dispatch(&mut state)
+                .dispatch_pending(&mut state)
                 .context("failed during Wayland event dispatch")?;
+            event_queue.flush().ok();
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -171,6 +205,7 @@ fn play_video_loop(
     state: &mut AppState,
     fps: u32,
     fit_mode: FitMode,
+    stop_signal: Option<&AtomicBool>,
 ) -> Result<()> {
     gst::init().context("failed to initialize gstreamer")?;
 
@@ -221,6 +256,7 @@ fn play_video_loop(
             state,
             visibility.as_ref(),
             frame_timeout_ms,
+            stop_signal,
         ) {
             Ok(()) => return Ok(()),
             Err(err) => {
@@ -287,6 +323,7 @@ fn run_video_pipeline(
     state: &mut AppState,
     visibility: Option<&HyprlandVisibility>,
     frame_timeout_ms: u64,
+    stop_signal: Option<&AtomicBool>,
 ) -> Result<()> {
     let pipeline = gst::parse::launch(pipeline_desc)
         .context("failed to build gstreamer pipeline")?
@@ -324,6 +361,14 @@ fn run_video_pipeline(
     let mut last_visibility_refresh = Instant::now();
 
     while !state.exit {
+        if stop_signal
+            .map(|signal| signal.load(Ordering::Relaxed))
+            .unwrap_or(false)
+        {
+            state.exit = true;
+            break;
+        }
+
         if let Some(v) = visibility {
             if last_visibility_refresh.elapsed() >= Duration::from_millis(500) {
                 v.refresh_now();
