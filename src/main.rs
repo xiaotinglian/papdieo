@@ -11,6 +11,7 @@ use std::{
     env,
     fs::File,
     fs::OpenOptions,
+    io,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
     sync::{
@@ -36,9 +37,25 @@ struct MonitorAssignment {
     fit: FitMode,
 }
 
-fn main() -> Result<()> {
+fn main() {
     let args = PapdieoArgs::parse();
-    run(args)
+    if let Err(error) = run(args) {
+        if is_broken_pipe_error(&error) {
+            return;
+        }
+
+        eprintln!("{:#}", error);
+        std::process::exit(1);
+    }
+}
+
+fn is_broken_pipe_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .map(|io_error| io_error.kind() == io::ErrorKind::BrokenPipe)
+            .unwrap_or_else(|| cause.to_string().to_ascii_lowercase().contains("broken pipe"))
+    })
 }
 
 fn run(args: PapdieoArgs) -> Result<()> {
@@ -250,7 +267,8 @@ fn start_daemon_service(config_path: Option<&Path>) -> Result<()> {
     let log_path = DAEMON_LOG_PATH;
     let log_out = OpenOptions::new()
         .create(true)
-        .append(true)
+        .truncate(true)
+        .write(true)
         .open(log_path)?;
     let log_err = log_out.try_clone()?;
 
@@ -450,7 +468,9 @@ fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {
             match worker.join() {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    eprintln!("failed to run renderer assignments in daemon process: {}", error);
+                    if !is_broken_pipe_error(&error) {
+                        eprintln!("failed to run renderer assignments in daemon process: {}", error);
+                    }
                 }
                 Err(_) => {
                     eprintln!("renderer assignment worker panicked");
