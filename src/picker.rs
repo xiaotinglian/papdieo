@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use rand::seq::SliceRandom;
+use rand::prelude::IndexedRandom;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -31,7 +31,7 @@ pub fn list_wallpapers(dir: &Path) -> Result<Vec<PathBuf>> {
 
 pub fn pick_random_wallpaper(dir: &Path) -> Result<PathBuf> {
     let images = list_wallpapers(dir)?;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut selected = images
         .choose(&mut rng)
         .cloned()
