@@ -76,6 +76,18 @@ If these are available, `papdieo` can use hardware-accelerated decode (`nvh264de
 cargo build --release
 ```
 
+## Install
+
+```bash
+./install.sh
+```
+
+The installer detects Fedora and Arch Linux, installs the documented build
+dependencies, builds `papdieo`, and installs the binary to `~/.local/bin`.
+
+Use `./install.sh --system` to install to `/usr/local/bin`, or
+`./install.sh --skip-deps` if your system dependencies are already installed.
+
 If Fedora reports that `gstreamer-1.0` or `gstreamer-base-1.0` cannot be found,
 install `gstreamer1-devel`, `gstreamer1-plugins-base-devel`, and
 `pkgconf-pkg-config`.
