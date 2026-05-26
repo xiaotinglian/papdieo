@@ -28,6 +28,29 @@ sudo pacman -S --needed \
 	gst-libav
 ```
 
+### Fedora packages
+
+Install everything needed to build and run:
+
+```bash
+sudo dnf install \
+	rust \
+	cargo \
+	gcc \
+	pkgconf-pkg-config \
+	gstreamer1-devel \
+	gstreamer1-plugins-base-devel \
+	gstreamer1 \
+	gstreamer1-plugins-good \
+	gstreamer1-plugins-bad-free \
+	gstreamer1-plugins-ugly-free \
+	gstreamer1-plugin-libav
+```
+
+The `-devel` packages are required for `cargo build`: they provide the
+`gstreamer-1.0.pc` and `gstreamer-base-1.0.pc` files that the Rust
+`gstreamer-sys` crates look up through `pkg-config`.
+
 ### Optional (for better NVIDIA video decode path)
 
 - `nvidia-utils`
@@ -52,6 +75,10 @@ If these are available, `papdieo` can use hardware-accelerated decode (`nvh264de
 ```bash
 cargo build --release
 ```
+
+If Fedora reports that `gstreamer-1.0` or `gstreamer-base-1.0` cannot be found,
+install `gstreamer1-devel`, `gstreamer1-plugins-base-devel`, and
+`pkgconf-pkg-config`.
 
 ## Usage
 
