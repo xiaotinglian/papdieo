@@ -23,13 +23,16 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, ValueEnum)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum FitMode {
     Stretch,
     Fill,
     Cover,
     Fit,
     Contain,
+    Center,
+    #[serde(alias = "scaledown")]
+    ScaleDown,
 }
 
 impl Default for Config {

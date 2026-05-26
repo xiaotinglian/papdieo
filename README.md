@@ -176,8 +176,11 @@ of the configured keys match, papdieo falls back to detected monitor names.
 Supported `fit_mode` values:
 
 ```text
-stretch | fill | cover | fit | contain
+stretch | fill | cover | fit | contain | center | scale-down
 ```
+
+- `center`: do not scale; center the media and crop only if it is larger than the output.
+- `scale-down`: preserve aspect ratio but never upscale smaller media.
 
 Default auto-load path (no `--config` needed):
 

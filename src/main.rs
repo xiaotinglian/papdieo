@@ -682,6 +682,18 @@ fn fit_mode_for_monitor(cfg: &config::Config, monitor: &str) -> FitMode {
         .unwrap_or(FitMode::Cover)
 }
 
+fn fit_mode_arg(fit: FitMode) -> &'static str {
+    match fit {
+        FitMode::Stretch => "stretch",
+        FitMode::Fill => "fill",
+        FitMode::Cover => "cover",
+        FitMode::Fit => "fit",
+        FitMode::Contain => "contain",
+        FitMode::Center => "center",
+        FitMode::ScaleDown => "scale-down",
+    }
+}
+
 fn run_renderer(
     path: std::path::PathBuf,
     monitor: Option<String>,
@@ -709,13 +721,7 @@ fn run_renderer(
         .arg("--fps")
         .arg(fps.to_string())
         .arg("--fit")
-        .arg(match fit {
-            FitMode::Stretch => "stretch",
-            FitMode::Fill => "fill",
-            FitMode::Cover => "cover",
-            FitMode::Fit => "fit",
-            FitMode::Contain => "contain",
-        })
+        .arg(fit_mode_arg(fit))
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_out))
         .stderr(Stdio::from(log_err))
@@ -763,13 +769,7 @@ fn run_rotate_loop(
             .arg("--fps")
             .arg(fps.to_string())
             .arg("--fit")
-            .arg(match fit {
-                FitMode::Stretch => "stretch",
-                FitMode::Fill => "fill",
-                FitMode::Cover => "cover",
-                FitMode::Fit => "fit",
-                FitMode::Contain => "contain",
-            })
+            .arg(fit_mode_arg(fit))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

@@ -30,7 +30,7 @@ pub enum Command {
         monitor: Option<String>,
         #[arg(long, help = "Video FPS target (default: 60)")]
         fps: Option<u32>,
-        #[arg(long, value_enum, help = "Render mode: stretch|fill|cover|fit|contain")]
+        #[arg(long, value_enum, help = "Render mode: stretch|fill|cover|fit|contain|center|scale-down")]
         fit: Option<FitMode>,
         #[arg(long, help = "Run wallpaper renderer in background")]
         detach: bool,
@@ -44,7 +44,7 @@ pub enum Command {
         monitor: Option<String>,
         #[arg(long, help = "Video FPS target (default: 60)")]
         fps: Option<u32>,
-        #[arg(long, value_enum, help = "Render mode: stretch|fill|cover|fit|contain")]
+        #[arg(long, value_enum, help = "Render mode: stretch|fill|cover|fit|contain|center|scale-down")]
         fit: Option<FitMode>,
         #[arg(long, help = "Run wallpaper renderer in background")]
         detach: bool,
@@ -58,7 +58,7 @@ pub enum Command {
         monitor: Option<String>,
         #[arg(long, help = "Video FPS target (default: 60)")]
         fps: Option<u32>,
-        #[arg(long, value_enum, help = "Render mode: stretch|fill|cover|fit|contain")]
+        #[arg(long, value_enum, help = "Render mode: stretch|fill|cover|fit|contain|center|scale-down")]
         fit: Option<FitMode>,
         #[arg(long, help = "Run wallpaper renderer in background")]
         detach: bool,
@@ -74,7 +74,7 @@ pub enum Command {
         interval: Option<u64>,
         #[arg(long, help = "Video FPS target (default: 60)")]
         fps: Option<u32>,
-        #[arg(long, value_enum, help = "Render mode: stretch|fill|cover|fit|contain")]
+        #[arg(long, value_enum, help = "Render mode: stretch|fill|cover|fit|contain|center|scale-down")]
         fit: Option<FitMode>,
     },
 
