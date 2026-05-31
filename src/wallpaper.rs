@@ -427,8 +427,9 @@ fn run_video_pipeline(
         return Err(anyhow!("no free Wayland frame buffer for initial video frame"));
     }
 
-    let mut is_paused = false;
     let mut last_visibility_refresh = Instant::now();
+    let mut render_enabled = visibility.map(|v| v.should_render()).unwrap_or(true);
+    let mut pending_render_state: Option<(bool, Instant)> = None;
 
     while !state.exit {
         if stop_signal
@@ -444,16 +445,24 @@ fn run_video_pipeline(
                 v.refresh_now();
                 last_visibility_refresh = Instant::now();
             }
+
+            let observed = v.should_render();
+            if observed == render_enabled {
+                pending_render_state = None;
+            } else {
+                match pending_render_state {
+                    Some((pending, since)) if pending == observed => {
+                        if since.elapsed() >= Duration::from_millis(750) {
+                            render_enabled = observed;
+                            pending_render_state = None;
+                        }
+                    }
+                    _ => pending_render_state = Some((observed, Instant::now())),
+                }
+            }
         }
 
-        let should_render = visibility.map(|v| v.should_render()).unwrap_or(true);
-        if should_render && is_paused {
-            pipeline.set_state(gst::State::Playing).ok();
-            is_paused = false;
-        } else if !should_render && !is_paused {
-            pipeline.set_state(gst::State::Paused).ok();
-            is_paused = true;
-        }
+        let should_render = render_enabled;
 
         let mut waited_for_release = false;
 
