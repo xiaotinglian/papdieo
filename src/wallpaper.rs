@@ -415,14 +415,17 @@ fn run_video_pipeline(
         return Err(anyhow!("no initial video frame from pipeline"));
     };
 
-    write_sample_frame(
+    if !write_sample_frame(
         &initial_sample,
         surface,
         renderer,
         width as usize,
         height as usize,
         fit_mode,
-    )?;
+    )? {
+        pipeline.set_state(gst::State::Null).ok();
+        return Err(anyhow!("no free Wayland frame buffer for initial video frame"));
+    }
 
     let mut is_paused = false;
     let mut last_visibility_refresh = Instant::now();
@@ -452,9 +455,11 @@ fn run_video_pipeline(
             is_paused = true;
         }
 
+        let mut waited_for_release = false;
+
         if should_render {
             if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(frame_timeout_ms)) {
-                write_sample_frame(
+                let wrote_frame = write_sample_frame(
                     &sample,
                     surface,
                     renderer,
@@ -462,6 +467,15 @@ fn run_video_pipeline(
                     height as usize,
                     fit_mode,
                 )?;
+
+                if !wrote_frame {
+                    // All shm buffers are currently held by the compositor.
+                    // Block until at least one release event arrives.
+                    event_queue
+                        .blocking_dispatch(state)
+                        .context("failed while waiting for Wayland frame release")?;
+                    waited_for_release = true;
+                }
             }
         } else {
             std::thread::sleep(Duration::from_millis(120));
@@ -483,9 +497,11 @@ fn run_video_pipeline(
             }
         }
 
-        event_queue
-            .dispatch_pending(state)
-            .context("failed dispatching Wayland events")?;
+        if !waited_for_release {
+            event_queue
+                .dispatch_pending(state)
+                .context("failed dispatching Wayland events")?;
+        }
         event_queue.flush().ok();
     }
 
@@ -500,14 +516,21 @@ fn write_sample_frame(
     width: usize,
     height: usize,
     fit_mode: FitMode,
-) -> Result<()> {
-    renderer.write_sample_bgrx(sample, width, height, fit_mode)?;
+) -> Result<bool> {
+    let Some(slot) = renderer.acquire_slot() else {
+        return Ok(false);
+    };
 
-    surface.attach(Some(&renderer.buffer), 0, 0);
+    if let Err(error) = renderer.write_sample_bgrx(slot, sample, width, height, fit_mode) {
+        renderer.release_slot(slot);
+        return Err(error);
+    }
+
+    surface.attach(Some(renderer.buffer(slot)), 0, 0);
     surface.damage_buffer(0, 0, renderer.width as i32, renderer.height as i32);
     surface.commit();
 
-    Ok(())
+    Ok(true)
 }
 
 fn draw_image_frame(
@@ -515,23 +538,36 @@ fn draw_image_frame(
     surface: &wl_surface::WlSurface,
     renderer: &mut FrameRenderer,
 ) -> Result<()> {
-    renderer.write_rgba_image_frame(rgba_bytes)?;
+    let slot = renderer
+        .acquire_slot()
+        .ok_or_else(|| anyhow!("no free Wayland frame buffer for image frame"))?;
 
-    surface.attach(Some(&renderer.buffer), 0, 0);
+    if let Err(error) = renderer.write_rgba_image_frame(slot, rgba_bytes) {
+        renderer.release_slot(slot);
+        return Err(error);
+    }
+
+    surface.attach(Some(renderer.buffer(slot)), 0, 0);
     surface.damage_buffer(0, 0, renderer.width as i32, renderer.height as i32);
     surface.commit();
 
     Ok(())
 }
 
-struct FrameRenderer {
-    width: u32,
-    height: u32,
+struct FrameSlot {
     frame_size: usize,
     mmap: MmapMut,
     _file: File,
     _pool: wl_shm_pool::WlShmPool,
     buffer: wl_buffer::WlBuffer,
+    in_use: Arc<AtomicBool>,
+}
+
+struct FrameRenderer {
+    width: u32,
+    height: u32,
+    slots: Vec<FrameSlot>,
+    next_slot: usize,
 }
 
 impl FrameRenderer {
@@ -543,44 +579,82 @@ impl FrameRenderer {
     ) -> Result<Self> {
         let stride = (width * 4) as i32;
         let frame_size = (height as i32 * stride) as usize;
-        let buffer_path = std::env::temp_dir().join(format!("papdieo-buffer-{}", process::id()));
+        let mut slots = Vec::with_capacity(2);
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&buffer_path)
-            .context("failed to create shared memory buffer file")?;
-        file.set_len(frame_size as u64)?;
-        let _ = std::fs::remove_file(&buffer_path);
+        for index in 0..2 {
+            let buffer_path = std::env::temp_dir()
+                .join(format!("papdieo-buffer-{}-{}", process::id(), index));
 
-        let mmap = unsafe { MmapMut::map_mut(&file) }.context("failed to map shared memory")?;
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&buffer_path)
+                .context("failed to create shared memory buffer file")?;
+            file.set_len(frame_size as u64)?;
+            let _ = std::fs::remove_file(&buffer_path);
 
-        let pool = shm.create_pool(file.as_fd(), frame_size as i32, qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            width as i32,
-            height as i32,
-            stride,
-            wl_shm::Format::Xrgb8888,
-            qh,
-            (),
-        );
+            let mmap =
+                unsafe { MmapMut::map_mut(&file) }.context("failed to map shared memory")?;
+
+            let in_use = Arc::new(AtomicBool::new(false));
+            let pool = shm.create_pool(file.as_fd(), frame_size as i32, qh, ());
+            let buffer = pool.create_buffer(
+                0,
+                width as i32,
+                height as i32,
+                stride,
+                wl_shm::Format::Xrgb8888,
+                qh,
+                in_use.clone(),
+            );
+
+            slots.push(FrameSlot {
+                frame_size,
+                mmap,
+                _file: file,
+                _pool: pool,
+                buffer,
+                in_use,
+            });
+        }
 
         Ok(Self {
             width,
             height,
-            frame_size,
-            mmap,
-            _file: file,
-            _pool: pool,
-            buffer,
+            slots,
+            next_slot: 0,
         })
+    }
+
+    fn acquire_slot(&mut self) -> Option<usize> {
+        for offset in 0..self.slots.len() {
+            let idx = (self.next_slot + offset) % self.slots.len();
+            let slot = &self.slots[idx];
+            if !slot.in_use.load(Ordering::Acquire) {
+                slot.in_use.store(true, Ordering::Release);
+                self.next_slot = (idx + 1) % self.slots.len();
+                return Some(idx);
+            }
+        }
+
+        None
+    }
+
+    fn release_slot(&self, slot_idx: usize) {
+        if let Some(slot) = self.slots.get(slot_idx) {
+            slot.in_use.store(false, Ordering::Release);
+        }
+    }
+
+    fn buffer(&self, slot_idx: usize) -> &wl_buffer::WlBuffer {
+        &self.slots[slot_idx].buffer
     }
 
     fn write_sample_bgrx(
         &mut self,
+        slot_idx: usize,
         sample: &gst::Sample,
         width: usize,
         height: usize,
@@ -609,10 +683,10 @@ impl FrameRenderer {
         {
             let rgba = rgba_from_bgrx_frame(src, stride, info.width(), info.height())?;
             let rendered = render_rgba_fit(&rgba, width as u32, height as u32, fit_mode);
-            return self.write_rgba_image_frame(rendered.as_raw());
+            return self.write_rgba_image_frame(slot_idx, rendered.as_raw());
         }
 
-        if row_bytes * height > self.frame_size {
+        if row_bytes * height > self.slots[slot_idx].frame_size {
             return Err(anyhow!("video frame larger than renderer buffer"));
         }
 
@@ -624,18 +698,21 @@ impl FrameRenderer {
             if src_end > src.len() {
                 return Err(anyhow!("video frame stride exceeds buffer"));
             }
-            self.mmap[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
+            self.slots[slot_idx].mmap[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
         }
 
         Ok(())
     }
 
-    fn write_rgba_image_frame(&mut self, rgba: &[u8]) -> Result<()> {
-        if rgba.len() > self.frame_size {
+    fn write_rgba_image_frame(&mut self, slot_idx: usize, rgba: &[u8]) -> Result<()> {
+        if rgba.len() > self.slots[slot_idx].frame_size {
             return Err(anyhow!("image frame is larger than renderer buffer"));
         }
 
-        for (dst, px) in self.mmap[..rgba.len()].chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+        for (dst, px) in self.slots[slot_idx].mmap[..rgba.len()]
+            .chunks_exact_mut(4)
+            .zip(rgba.chunks_exact(4))
+        {
             dst[0] = px[2];
             dst[1] = px[1];
             dst[2] = px[0];
@@ -983,15 +1060,18 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for AppState {
     }
 }
 
-impl Dispatch<wl_buffer::WlBuffer, ()> for AppState {
+impl Dispatch<wl_buffer::WlBuffer, Arc<AtomicBool>> for AppState {
     fn event(
         _state: &mut Self,
         _proxy: &wl_buffer::WlBuffer,
-        _event: wl_buffer::Event,
-        _data: &(),
+        event: wl_buffer::Event,
+        data: &Arc<AtomicBool>,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if matches!(event, wl_buffer::Event::Release) {
+            data.store(false, Ordering::Release);
+        }
     }
 }
 
