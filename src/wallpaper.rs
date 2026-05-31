@@ -14,7 +14,7 @@ use std::{
     process::Command,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Instant,
@@ -30,6 +30,8 @@ use wayland_client::{
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1, zwlr_layer_surface_v1,
 };
+
+static BUFFER_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn run_wallpaper(
     path: PathBuf,
@@ -415,21 +417,10 @@ fn run_video_pipeline(
         return Err(anyhow!("no initial video frame from pipeline"));
     };
 
-    if !write_sample_frame(
-        &initial_sample,
-        surface,
-        renderer,
-        width as usize,
-        height as usize,
-        fit_mode,
-    )? {
-        pipeline.set_state(gst::State::Null).ok();
-        return Err(anyhow!("no free Wayland frame buffer for initial video frame"));
-    }
-
     let mut last_visibility_refresh = Instant::now();
     let mut render_enabled = visibility.map(|v| v.should_render()).unwrap_or(true);
     let mut pending_render_state: Option<(bool, Instant)> = None;
+    let mut primed_sample = Some(initial_sample);
 
     while !state.exit {
         if stop_signal
@@ -466,8 +457,12 @@ fn run_video_pipeline(
 
         let mut waited_for_release = false;
 
-        if should_render {
-            if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(frame_timeout_ms)) {
+        let sample = primed_sample
+            .take()
+            .or_else(|| sink.try_pull_sample(gst::ClockTime::from_mseconds(frame_timeout_ms)));
+
+        if let Some(sample) = sample {
+            if should_render {
                 let wrote_frame = write_sample_frame(
                     &sample,
                     surface,
@@ -486,8 +481,8 @@ fn run_video_pipeline(
                     waited_for_release = true;
                 }
             }
-        } else {
-            std::thread::sleep(Duration::from_millis(120));
+        } else if !should_render {
+            std::thread::sleep(Duration::from_millis(30));
         }
 
         if let Some(msg) = bus.pop_filtered(&[gst::MessageType::Error, gst::MessageType::Eos]) {
@@ -591,8 +586,9 @@ impl FrameRenderer {
         let mut slots = Vec::with_capacity(2);
 
         for index in 0..2 {
+            let unique_id = BUFFER_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let buffer_path = std::env::temp_dir()
-                .join(format!("papdieo-buffer-{}-{}", process::id(), index));
+                .join(format!("papdieo-buffer-{}-{}-{}", process::id(), unique_id, index));
 
             let file = OpenOptions::new()
                 .read(true)
