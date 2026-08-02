@@ -179,8 +179,13 @@ Supported `fit_mode` values:
 stretch | fill | cover | fit | contain | center | scale-down
 ```
 
-- `center`: do not scale; center the media and crop only if it is larger than the output.
-- `scale-down`: preserve aspect ratio but never upscale smaller media.
+- `stretch`: resize to the monitor dimensions without preserving aspect ratio.
+- `fill` / `cover`: preserve aspect ratio, fill the monitor, and center-crop overflow.
+- `fit` / `contain`: preserve aspect ratio and show the whole image, adding centered bars when needed.
+- `center`: do not scale; center the media, cropping or adding bars when needed.
+- `scale-down`: behave like `contain`, but never upscale media that is smaller than the monitor.
+
+These modes use the same layout behavior for images and videos.
 
 Default auto-load path (no `--config` needed):
 

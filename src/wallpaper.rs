@@ -263,111 +263,165 @@ fn build_video_pipeline_descriptions(
     height: u32,
     fps: u32,
     fit_mode: FitMode,
-) -> [String; 4] {
-    let scale_stage = video_scale_stage(fit_mode);
+) -> Vec<String> {
+    let fit_stage = video_fit_stage(fit_mode, width, height);
     let output_caps = video_output_caps(fit_mode, width, height, fps);
+    let decoder_stages = [
+        "qtdemux ! h264parse ! nvh264dec",
+        "qtdemux ! h264parse ! vaapih264dec ! vaapipostproc",
+        "qtdemux ! h264parse ! vulkanh264dec",
+        "decodebin",
+    ];
 
-    [
-        // NVIDIA fast path
-        format!(
-            "filesrc location=\"{}\" ! qtdemux ! h264parse ! nvh264dec ! videoconvert{} ! videorate ! {} ! appsink name=sink sync=true max-buffers=1 drop=true",
-            location, scale_stage, output_caps
-        ),
-        // Intel/AMD VA-API decode to lower CPU usage on laptops while preserving contain/fit behavior.
-        format!(
-            "filesrc location=\"{}\" ! qtdemux ! h264parse ! vaapih264dec ! vaapipostproc ! videoconvert{} ! videorate ! {} ! appsink name=sink sync=true max-buffers=1 drop=true",
-            location, scale_stage, output_caps
-        ),
-        // Generic Vulkan decode
-        format!(
-            "filesrc location=\"{}\" ! qtdemux ! h264parse ! vulkanh264dec ! videoconvert{} ! videorate ! {} ! appsink name=sink sync=true max-buffers=1 drop=true",
-            location, scale_stage, output_caps
-        ),
-        // Fallback software decode
-        format!(
-            "filesrc location=\"{}\" ! decodebin ! videoconvert{} ! videorate ! {} ! appsink name=sink sync=true max-buffers=1 drop=true",
-            location, scale_stage, output_caps
-        ),
-    ]
+    let mut descriptions = build_video_pipelines(
+        location,
+        &decoder_stages,
+        fit_stage.as_str(),
+        output_caps.as_str(),
+    );
+
+    // aspectratiocrop and videobox come from gst-plugins-good. Preserve a
+    // correctness-first CPU fallback when that optional plugin is unavailable.
+    if matches!(fit_mode, FitMode::Fill | FitMode::Cover | FitMode::Center) {
+        let source_caps = format!(
+            "video/x-raw,format=BGRx,pixel-aspect-ratio=1/1,framerate={}/1",
+            fps
+        );
+        descriptions.extend(build_video_pipelines(
+            location,
+            &decoder_stages,
+            "",
+            source_caps.as_str(),
+        ));
+    }
+
+    descriptions
 }
 
-fn video_scale_stage(fit_mode: FitMode) -> &'static str {
+fn build_video_pipelines(
+    location: &str,
+    decoder_stages: &[&str],
+    fit_stage: &str,
+    output_caps: &str,
+) -> Vec<String> {
+    decoder_stages
+        .iter()
+        .map(|decoder| {
+            format!(
+                "filesrc location=\"{}\" ! {} ! videoconvert{} ! videorate ! {} ! appsink name=sink sync=true max-buffers=1 drop=true",
+                location, decoder, fit_stage, output_caps
+            )
+        })
+        .collect()
+}
+
+fn video_fit_stage(fit_mode: FitMode, width: u32, height: u32) -> String {
     match fit_mode {
-        FitMode::Center | FitMode::ScaleDown => "",
-        FitMode::Fit | FitMode::Contain => " ! videoscale add-borders=true",
-        _ => " ! videoscale",
+        FitMode::Stretch => " ! videoscale n-threads=0 add-borders=false".into(),
+        FitMode::Fill | FitMode::Cover => format!(
+            " ! aspectratiocrop aspect-ratio={}/{} ! videoscale n-threads=0 add-borders=false",
+            width, height
+        ),
+        FitMode::Fit | FitMode::Contain => {
+            " ! videoscale n-threads=0 add-borders=true".into()
+        }
+        FitMode::Center => " ! videobox autocrop=true".into(),
+        FitMode::ScaleDown => String::new(),
     }
 }
 
 fn video_output_caps(fit_mode: FitMode, width: u32, height: u32, fps: u32) -> String {
-    match fit_mode {
-        FitMode::Center | FitMode::ScaleDown => {
-            format!("video/x-raw,format=BGRx,framerate={}/1", fps)
-        }
-        _ => format!(
-            "video/x-raw,format=BGRx,width={},height={},framerate={}/1",
-            width, height, fps
-        ),
-    }
+    let dimensions = if matches!(fit_mode, FitMode::ScaleDown) {
+        String::new()
+    } else {
+        format!(",width={},height={}", width, height)
+    };
+
+    format!(
+        "video/x-raw,format=BGRx,pixel-aspect-ratio=1/1{},framerate={}/1",
+        dimensions, fps
+    )
 }
 
-fn render_image_fit(
-    image: &DynamicImage,
-    out_w: u32,
-    out_h: u32,
-    fit_mode: FitMode,
-) -> RgbaImage {
+fn render_image_fit(image: &DynamicImage, out_w: u32, out_h: u32, fit_mode: FitMode) -> RgbaImage {
     render_rgba_fit(&image.to_rgba8(), out_w, out_h, fit_mode)
 }
 
 fn render_rgba_fit(image: &RgbaImage, out_w: u32, out_h: u32, fit_mode: FitMode) -> RgbaImage {
+    let (resize_w, resize_h) =
+        fitted_dimensions(image.width(), image.height(), out_w, out_h, fit_mode);
+
+    let resized = if (resize_w, resize_h) == image.dimensions() {
+        image.clone()
+    } else {
+        imageops::resize(image, resize_w, resize_h, FilterType::Lanczos3)
+    };
+
+    center_on_canvas(&resized, out_w, out_h)
+}
+
+fn fitted_dimensions(
+    source_w: u32,
+    source_h: u32,
+    out_w: u32,
+    out_h: u32,
+    fit_mode: FitMode,
+) -> (u32, u32) {
+    debug_assert!(source_w > 0 && source_h > 0);
+    debug_assert!(out_w > 0 && out_h > 0);
+
     match fit_mode {
-        FitMode::Stretch => imageops::resize(image, out_w, out_h, FilterType::Lanczos3),
-        FitMode::Fit | FitMode::Contain => render_contained_rgba(image, out_w, out_h, true),
-        FitMode::Center => render_centered_rgba(image, out_w, out_h),
-        FitMode::ScaleDown => render_contained_rgba(image, out_w, out_h, false),
+        // Stretch is intentionally the only aspect-ratio-breaking mode.
+        FitMode::Stretch => (out_w, out_h),
+
+        // fill/cover enlarge just enough to cover the output, then crop evenly.
         FitMode::Fill | FitMode::Cover => {
-            let scale = f64::max(
-                out_w as f64 / image.width() as f64,
-                out_h as f64 / image.height() as f64,
+            let (width, height) = scaled_dimensions(
+                source_w,
+                source_h,
+                (out_w as f64 / source_w as f64).max(out_h as f64 / source_h as f64),
             );
-            let rw = (image.width() as f64 * scale).round().max(out_w as f64) as u32;
-            let rh = (image.height() as f64 * scale).round().max(out_h as f64) as u32;
-            let resized = imageops::resize(image, rw, rh, FilterType::Lanczos3);
-            let x = (rw.saturating_sub(out_w)) / 2;
-            let y = (rh.saturating_sub(out_h)) / 2;
-            imageops::crop_imm(&resized, x, y, out_w, out_h).to_image()
+            (width.max(out_w), height.max(out_h))
+        }
+
+        // fit/contain shrink or enlarge until the whole frame is visible.
+        FitMode::Fit | FitMode::Contain => {
+            let (width, height) = scaled_dimensions(
+                source_w,
+                source_h,
+                (out_w as f64 / source_w as f64).min(out_h as f64 / source_h as f64),
+            );
+            (width.min(out_w), height.min(out_h))
+        }
+
+        // Center preserves source pixels and crops/pads equally on opposite sides.
+        FitMode::Center => (source_w, source_h),
+
+        // Scale-down is contain with upscaling disabled.
+        FitMode::ScaleDown => {
+            let (width, height) = scaled_dimensions(
+                source_w,
+                source_h,
+                (out_w as f64 / source_w as f64)
+                    .min(out_h as f64 / source_h as f64)
+                    .min(1.0),
+            );
+            (
+                width.min(source_w).min(out_w),
+                height.min(source_h).min(out_h),
+            )
         }
     }
 }
 
-fn render_contained_rgba(
-    image: &RgbaImage,
-    out_w: u32,
-    out_h: u32,
-    allow_upscale: bool,
-) -> RgbaImage {
-    let scale = f64::min(
-        out_w as f64 / image.width() as f64,
-        out_h as f64 / image.height() as f64,
-    );
-    let scale = if allow_upscale { scale } else { scale.min(1.0) };
-    let rw = (image.width() as f64 * scale).round().max(1.0) as u32;
-    let rh = (image.height() as f64 * scale).round().max(1.0) as u32;
-    let resized = if rw == image.width() && rh == image.height() {
-        image.clone()
-    } else {
-        imageops::resize(image, rw, rh, FilterType::Lanczos3)
-    };
-
-    let mut canvas = RgbaImage::new(out_w, out_h);
-    let x = ((out_w as i64 - resized.width() as i64) / 2).max(0) as u32;
-    let y = ((out_h as i64 - resized.height() as i64) / 2).max(0) as u32;
-    imageops::overlay(&mut canvas, &resized, x as i64, y as i64);
-    canvas
+fn scaled_dimensions(source_w: u32, source_h: u32, scale: f64) -> (u32, u32) {
+    (
+        (source_w as f64 * scale).round().max(1.0) as u32,
+        (source_h as f64 * scale).round().max(1.0) as u32,
+    )
 }
 
-fn render_centered_rgba(image: &RgbaImage, out_w: u32, out_h: u32) -> RgbaImage {
+fn center_on_canvas(image: &RgbaImage, out_w: u32, out_h: u32) -> RgbaImage {
     let crop_w = image.width().min(out_w);
     let crop_h = image.height().min(out_h);
     let src_x = image.width().saturating_sub(crop_w) / 2;
@@ -678,32 +732,50 @@ impl FrameRenderer {
         let info = gst_video::VideoInfo::from_caps(caps)
             .map_err(|_| anyhow!("failed to parse video caps"))?;
 
-        let stride = info.stride()[0] as usize;
+        let stride = usize::try_from(info.stride()[0])
+            .map_err(|_| anyhow!("video frame has a negative stride"))?;
         let src = map.as_slice();
-        let row_bytes = width * 4;
 
-        if info.width() != width as u32
-            || info.height() != height as u32
-            || matches!(fit_mode, FitMode::Center | FitMode::ScaleDown)
+        if info.width() == width as u32
+            && info.height() == height as u32
+            && !matches!(fit_mode, FitMode::ScaleDown)
         {
-            let rgba = rgba_from_bgrx_frame(src, stride, info.width(), info.height())?;
-            let rendered = render_rgba_fit(&rgba, width as u32, height as u32, fit_mode);
-            return self.write_rgba_image_frame(slot_idx, rendered.as_raw());
+            return self.write_bgrx_frame(slot_idx, src, stride, width, height);
         }
 
-        if row_bytes * height > self.slots[slot_idx].frame_size {
-            return Err(anyhow!("video frame larger than renderer buffer"));
+        let rgba = rgba_from_bgrx_frame(src, stride, info.width(), info.height())?;
+        let rendered = render_rgba_fit(&rgba, width as u32, height as u32, fit_mode);
+        self.write_rgba_image_frame(slot_idx, rendered.as_raw())
+    }
+
+    fn write_bgrx_frame(
+        &mut self,
+        slot_idx: usize,
+        bgrx: &[u8],
+        source_stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<()> {
+        let row_bytes = width
+            .checked_mul(4)
+            .ok_or_else(|| anyhow!("video row size overflow"))?;
+        let frame_bytes = row_bytes
+            .checked_mul(height)
+            .ok_or_else(|| anyhow!("video frame size overflow"))?;
+
+        if frame_bytes > self.slots[slot_idx].frame_size {
+            return Err(anyhow!("video frame is larger than renderer buffer"));
         }
 
         for row in 0..height {
-            let src_start = row * stride;
-            let dst_start = row * row_bytes;
+            let src_start = row * source_stride;
             let src_end = src_start + row_bytes;
-            let dst_end = dst_start + row_bytes;
-            if src_end > src.len() {
+            let dst_start = row * row_bytes;
+            if src_end > bgrx.len() {
                 return Err(anyhow!("video frame stride exceeds buffer"));
             }
-            self.slots[slot_idx].mmap[dst_start..dst_end].copy_from_slice(&src[src_start..src_end]);
+            self.slots[slot_idx].mmap[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&bgrx[src_start..src_end]);
         }
 
         Ok(())
@@ -1126,50 +1198,135 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_video_pipeline_descriptions, render_rgba_fit};
+    use super::{
+        build_video_pipeline_descriptions, fitted_dimensions, render_rgba_fit, video_fit_stage,
+        video_output_caps,
+    };
     use crate::config::FitMode;
-    use image::RgbaImage;
+    use image::{Rgba, RgbaImage};
 
     #[test]
-    fn contain_enables_borders_for_all_video_pipelines() {
-        let descriptions =
-            build_video_pipeline_descriptions("/tmp/demo.mp4", 1920, 1080, 60, FitMode::Contain);
-
-        assert!(descriptions
-            .iter()
-            .all(|pipeline| pipeline.contains("videoscale add-borders=true")));
+    fn video_modes_use_the_expected_streaming_fit_stage() {
+        assert_eq!(
+            video_fit_stage(FitMode::Stretch, 1920, 1080),
+            " ! videoscale n-threads=0 add-borders=false"
+        );
+        assert_eq!(
+            video_fit_stage(FitMode::Cover, 1920, 1080),
+            " ! aspectratiocrop aspect-ratio=1920/1080 ! videoscale n-threads=0 add-borders=false"
+        );
+        assert_eq!(
+            video_fit_stage(FitMode::Contain, 1920, 1080),
+            " ! videoscale n-threads=0 add-borders=true"
+        );
+        assert_eq!(
+            video_fit_stage(FitMode::Center, 1920, 1080),
+            " ! videobox autocrop=true"
+        );
+        assert_eq!(video_fit_stage(FitMode::ScaleDown, 1920, 1080), "");
     }
 
     #[test]
-    fn cover_does_not_enable_video_borders() {
-        let descriptions =
-            build_video_pipeline_descriptions("/tmp/demo.mp4", 1920, 1080, 60, FitMode::Cover);
+    fn fitted_video_caps_force_square_pixels_and_output_dimensions() {
+        let caps = video_output_caps(FitMode::Contain, 1920, 1080, 60);
+        assert!(caps.contains("pixel-aspect-ratio=1/1"));
+        assert!(caps.contains("width=1920,height=1080"));
 
-        assert!(descriptions
-            .iter()
-            .all(|pipeline| !pipeline.contains("add-borders=true")));
+        let scale_down_caps = video_output_caps(FitMode::ScaleDown, 1920, 1080, 60);
+        assert!(scale_down_caps.contains("pixel-aspect-ratio=1/1"));
+        assert!(!scale_down_caps.contains("width="));
+        assert!(!scale_down_caps.contains("height="));
     }
 
     #[test]
-    fn center_video_pipelines_keep_source_dimensions() {
-        let descriptions =
-            build_video_pipeline_descriptions("/tmp/demo.mp4", 1920, 1080, 60, FitMode::Center);
+    fn cover_video_has_optimized_pipelines_and_cpu_fallbacks() {
+        let descriptions = build_video_pipeline_descriptions(
+            "/tmp/demo.mp4",
+            1920,
+            1080,
+            60,
+            FitMode::Cover,
+        );
 
-        assert!(descriptions.iter().all(|pipeline| !pipeline.contains("videoscale")));
-        assert!(descriptions
+        assert_eq!(descriptions.len(), 8);
+        assert!(descriptions[..4]
             .iter()
-            .all(|pipeline| !pipeline.contains("width=1920") && !pipeline.contains("height=1080")));
+            .all(|pipeline| pipeline.contains("aspectratiocrop aspect-ratio=1920/1080")));
+        assert!(descriptions[4..]
+            .iter()
+            .all(|pipeline| !pipeline.contains("aspectratiocrop")));
+    }
+
+    #[test]
+    fn every_fit_mode_has_the_expected_geometry() {
+        let source = (400, 200);
+        let output = (300, 300);
+
+        assert_eq!(fit_dimensions(source, output, FitMode::Stretch), (300, 300));
+        assert_eq!(fit_dimensions(source, output, FitMode::Fill), (600, 300));
+        assert_eq!(fit_dimensions(source, output, FitMode::Cover), (600, 300));
+        assert_eq!(fit_dimensions(source, output, FitMode::Fit), (300, 150));
+        assert_eq!(fit_dimensions(source, output, FitMode::Contain), (300, 150));
+        assert_eq!(fit_dimensions(source, output, FitMode::Center), (400, 200));
+        assert_eq!(
+            fit_dimensions(source, output, FitMode::ScaleDown),
+            (300, 150)
+        );
+    }
+
+    #[test]
+    fn aliases_render_identically() {
+        let image = test_image(4, 2);
+
+        assert_eq!(
+            render_rgba_fit(&image, 3, 3, FitMode::Fill),
+            render_rgba_fit(&image, 3, 3, FitMode::Cover)
+        );
+        assert_eq!(
+            render_rgba_fit(&image, 3, 3, FitMode::Fit),
+            render_rgba_fit(&image, 3, 3, FitMode::Contain)
+        );
+    }
+
+    #[test]
+    fn contain_letterboxes_while_cover_and_stretch_fill_the_output() {
+        let image = RgbaImage::from_pixel(4, 2, Rgba([255, 255, 255, 255]));
+        let contain = render_rgba_fit(&image, 4, 4, FitMode::Contain);
+        let cover = render_rgba_fit(&image, 4, 4, FitMode::Cover);
+        let stretch = render_rgba_fit(&image, 4, 4, FitMode::Stretch);
+
+        assert_eq!(contain.get_pixel(0, 0).0, [0, 0, 0, 0]);
+        assert_eq!(contain.get_pixel(0, 1).0, [255, 255, 255, 255]);
+        assert_eq!(cover.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        assert_eq!(stretch.get_pixel(0, 0).0, [255, 255, 255, 255]);
     }
 
     #[test]
     fn scale_down_does_not_upscale_smaller_images() {
-        let mut image = RgbaImage::new(1, 1);
-        image.put_pixel(0, 0, image::Rgba([255, 255, 255, 255]));
+        let image = RgbaImage::from_pixel(1, 1, Rgba([255, 255, 255, 255]));
 
         let rendered = render_rgba_fit(&image, 3, 3, FitMode::ScaleDown);
 
         assert_eq!(rendered.get_pixel(1, 1).0, [255, 255, 255, 255]);
         assert_eq!(rendered.get_pixel(0, 0).0, [0, 0, 0, 0]);
         assert_eq!(rendered.get_pixel(2, 2).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn center_crops_without_scaling() {
+        let image = test_image(3, 1);
+        let rendered = render_rgba_fit(&image, 1, 1, FitMode::Center);
+
+        assert_eq!(rendered.get_pixel(0, 0), image.get_pixel(1, 0));
+    }
+
+    fn fit_dimensions(source: (u32, u32), output: (u32, u32), mode: FitMode) -> (u32, u32) {
+        fitted_dimensions(source.0, source.1, output.0, output.1, mode)
+    }
+
+    fn test_image(width: u32, height: u32) -> RgbaImage {
+        RgbaImage::from_fn(width, height, |x, y| {
+            Rgba([(x * 40) as u8, (y * 80) as u8, 127, 255])
+        })
     }
 }
