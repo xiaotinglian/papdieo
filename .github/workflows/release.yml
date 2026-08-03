@@ -123,11 +123,59 @@ jobs:
               .github/aur-bin/PKGBUILD.template > PKGBUILD
 
       - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
-        with:
-          pkgname: papdieo-bin
-          pkgbuild: ./PKGBUILD
-          commit_username: ${{ secrets.AUR_USERNAME }}
-          commit_email: ${{ secrets.AUR_EMAIL }}
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to ${{ github.ref_name }}"
+        env:
+          AUR_USERNAME: ${{ secrets.AUR_USERNAME }}
+          AUR_EMAIL: ${{ secrets.AUR_EMAIL }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_PRIVATE_KEY_FALLBACK: ${{ secrets.AUR_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY_FALLBACK: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${AUR_USERNAME:-}" ]; then
+            echo "::error::AUR_USERNAME is not configured."
+            exit 1
+          fi
+
+          if [ -z "${AUR_EMAIL:-}" ]; then
+            echo "::error::AUR_EMAIL is not configured."
+            exit 1
+          fi
+
+          if [ -n "${AUR_SSH_PRIVATE_KEY:-}" ]; then
+            SSH_KEY="${AUR_SSH_PRIVATE_KEY}"
+          elif [ -n "${AUR_PRIVATE_KEY_FALLBACK:-}" ]; then
+            SSH_KEY="${AUR_PRIVATE_KEY_FALLBACK}"
+          elif [ -n "${SSH_PRIVATE_KEY_FALLBACK:-}" ]; then
+            SSH_KEY="${SSH_PRIVATE_KEY_FALLBACK}"
+          else
+            echo "::error::No AUR SSH private key was found. Set AUR_SSH_PRIVATE_KEY (or AUR_PRIVATE_KEY/SSH_PRIVATE_KEY)."
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/aur_id_ed25519"
+          chmod 600 "$HOME/.ssh/aur_id_ed25519"
+          ssh-keyscan -H aur.archlinux.org >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          eval "$(ssh-agent -s)"
+          ssh-add "$HOME/.ssh/aur_id_ed25519"
+
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T aur@aur.archlinux.org </dev/null
+
+          git clone "ssh://aur@aur.archlinux.org/papdieo-bin.git" "$RUNNER_TEMP/aur-repo"
+          cp PKGBUILD "$RUNNER_TEMP/aur-repo/PKGBUILD"
+          cd "$RUNNER_TEMP/aur-repo"
+          git config user.name "$AUR_USERNAME"
+          git config user.email "$AUR_EMAIL"
+          git add PKGBUILD
+
+          if git diff --cached --quiet; then
+            echo "No changes detected; skipping AUR push."
+            exit 0
+          fi
+
+          git commit -m "Update to ${{ github.ref_name }}"
+          git push origin HEAD:master
