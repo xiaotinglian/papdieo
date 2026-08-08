@@ -925,7 +925,11 @@ fn query_should_render(target_monitor_id: Option<i64>) -> Option<bool> {
             .get("hidden")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        if !mapped || hidden {
+        let floating = client
+            .get("floating")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !mapped || hidden || floating {
             return false;
         }
 
