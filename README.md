@@ -85,7 +85,8 @@ cargo build --release
 ```
 
 The installer detects Fedora and Arch Linux, installs the documented build
-dependencies, builds `papdieo`, and installs the binary to `~/.local/bin`.
+dependencies, builds `papdieo`, installs the binary to `~/.local/bin`, and
+enables and starts a systemd user service for the current user.
 
 Use `./install.sh --system` to install to `/usr/local/bin`, or
 `./install.sh --skip-deps` if your system dependencies are already installed.
@@ -94,12 +95,29 @@ If Fedora reports that `gstreamer-1.0` or `gstreamer-base-1.0` cannot be found,
 install `gstreamer1-devel`, `gstreamer1-plugins-base-devel`, and
 `pkgconf-pkg-config`.
 
+## Service management
+
+Papdieo runs as a systemd user service. Use systemd to control it instead of
+starting the daemon directly:
+
+```bash
+systemctl --user status papdieo.service
+systemctl --user restart papdieo.service
+systemctl --user stop papdieo.service
+systemctl --user start papdieo.service
+journalctl --user-unit papdieo.service --follow
+```
+
+The installed unit is located at
+`~/.config/systemd/user/papdieo.service`. It starts with the graphical user
+session and is restarted automatically if it fails.
+
+During an upgrade, the installer stops a legacy daemon previously launched
+directly before starting the systemd-managed service.
+
 ## Usage
 
 ```bash
-# Start daemon service (default behavior with no command)
-papdieo
-
 # Random wallpaper from default ~/Pictures/Wallpapers
 papdieo random
 
@@ -130,14 +148,8 @@ papdieo rotate --dir /path/to/media --interval 120
 # List discovered wallpapers
 papdieo list
 
-# Explicit daemon command (same as running with no subcommand)
-papdieo daemon
-
-# Run daemon in foreground
-papdieo daemon --foreground
-
-# Restart daemon service
-papdieo restart
+# Restart the systemd-managed daemon
+systemctl --user restart papdieo.service
 
 # Run renderer detached (background)
 papdieo set /path/to/wallpaper.png --detach

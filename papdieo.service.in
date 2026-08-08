@@ -1,0 +1,15 @@
+[Unit]
+Description=Papdieo wallpaper daemon
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=30
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart="@PAPDIEO_BIN@" daemon --foreground
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
