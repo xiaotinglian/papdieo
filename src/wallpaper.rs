@@ -271,6 +271,7 @@ fn build_video_pipeline_descriptions(
         "qtdemux ! h264parse ! nvh264dec",
         "qtdemux ! h265parse ! nvh265dec",
         "qtdemux ! h264parse ! vaapih264dec ! vaapipostproc",
+        "qtdemux ! h265parse ! vaapih265dec ! vaapipostproc",
         "qtdemux ! h264parse ! vulkanh264dec",
         "decodebin",
     ];
@@ -328,6 +329,9 @@ fn filter_available_video_pipelines(descriptions: Vec<String>) -> Vec<String> {
                 return false;
             }
             if pipeline.contains("vaapih264dec") && gst::ElementFactory::find("vaapih264dec").is_none() {
+                return false;
+            }
+            if pipeline.contains("vaapih265dec") && gst::ElementFactory::find("vaapih265dec").is_none() {
                 return false;
             }
             if pipeline.contains("vulkanh264dec") && gst::ElementFactory::find("vulkanh264dec").is_none() {

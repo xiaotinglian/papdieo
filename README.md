@@ -51,12 +51,14 @@ The `-devel` packages are required for `cargo build`: they provide the
 `gstreamer-1.0.pc` and `gstreamer-base-1.0.pc` files that the Rust
 `gstreamer-sys` crates look up through `pkg-config`.
 
-### Optional (for better NVIDIA video decode path)
+### Optional (for better hardware video decode path)
 
 - `nvidia-utils`
 - `vulkan-icd-loader`
+- `libva` / Intel VAAPI drivers (`intel-media-driver` or `intel-media-va-driver`) for Intel and AMD GPUs
+- `gst-plugins-vaapi`
 
-If these are available, `papdieo` can use hardware-accelerated decode (`nvh264dec` / `vulkanh264dec`) before fallback.
+If these are available, `papdieo` can use hardware-accelerated decode paths (`nvh264dec`, `nvh265dec`, `vulkanh264dec`, `vaapih264dec`, `vaapih265dec`) before fallback.
 
 ## Features
 
