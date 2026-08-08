@@ -213,23 +213,42 @@ fn run_wallpaper_assignments_cancellable(
                 let result = worker.join().map_err(|_| {
                     anyhow!("renderer thread panicked for monitor '{}'", monitor)
                 })?;
-                match result {
-                    Ok(()) => {
-                        return Err(anyhow!(
-                            "renderer thread exited unexpectedly for monitor '{}'",
-                            monitor
-                        ));
+
+                if let Err(error) = result {
+                    if let Some(signal) = stop_signal.as_ref() {
+                        signal.store(true, Ordering::Relaxed);
                     }
-                    Err(error) => {
-                        return Err(anyhow!(
-                            "renderer thread failed for monitor '{}': {}",
-                            monitor,
-                            error
-                        ));
+
+                    for (remaining_monitor, remaining_worker) in workers {
+                        let remaining_result = remaining_worker.join().map_err(|_| {
+                            anyhow!(
+                                "renderer thread panicked while cleaning up for monitor '{}'",
+                                remaining_monitor
+                            )
+                        })?;
+                        if let Err(remaining_error) = remaining_result {
+                            eprintln!(
+                                "renderer thread failed while cleaning up for monitor '{}': {}",
+                                remaining_monitor,
+                                remaining_error
+                            );
+                        }
                     }
+
+                    return Err(anyhow!(
+                        "renderer thread failed for monitor '{}': {}",
+                        monitor,
+                        error
+                    ));
                 }
+
+                return Err(anyhow!(
+                    "renderer thread exited unexpectedly for monitor '{}'",
+                    monitor
+                ));
+            } else {
+                idx += 1;
             }
-            idx += 1;
         }
 
         thread::sleep(Duration::from_millis(250));
@@ -315,7 +334,8 @@ fn stop_daemon_service() -> Result<()> {
         Err(_) => {
             let _ = std::fs::remove_file(pid_path);
             cleanup_renderer_processes();
-            return Err(anyhow!("invalid daemon pid file: {}", DAEMON_PID_PATH));
+            println!("removed stale daemon pid file; papdieo daemon not running");
+            return Ok(());
         }
     };
 
@@ -371,10 +391,16 @@ fn daemon_is_running(pid_path: &Path) -> bool {
         return false;
     };
     let Ok(pid) = content.trim().parse::<u32>() else {
+        let _ = std::fs::remove_file(pid_path);
         return false;
     };
 
-    PathBuf::from(format!("/proc/{pid}")).exists()
+    let running = PathBuf::from(format!("/proc/{pid}")).exists();
+    if !running {
+        let _ = std::fs::remove_file(pid_path);
+    }
+
+    running
 }
 
 fn run_daemon_loop(config_path: Option<&Path>) -> Result<()> {

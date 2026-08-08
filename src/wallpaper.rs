@@ -224,6 +224,7 @@ fn play_video_loop(
     let frame_timeout_ms = (1000 / fps.max(1)).max(4) as u64;
 
     let descriptions = build_video_pipeline_descriptions(&location, width, height, fps, fit_mode);
+    let descriptions = filter_available_video_pipelines(descriptions);
 
     let mut last_error: Option<anyhow::Error> = None;
     for pipeline_desc in descriptions {
@@ -268,6 +269,7 @@ fn build_video_pipeline_descriptions(
     let output_caps = video_output_caps(fit_mode, width, height, fps);
     let decoder_stages = [
         "qtdemux ! h264parse ! nvh264dec",
+        "qtdemux ! h265parse ! nvh265dec",
         "qtdemux ! h264parse ! vaapih264dec ! vaapipostproc",
         "qtdemux ! h264parse ! vulkanh264dec",
         "decodebin",
@@ -311,6 +313,27 @@ fn build_video_pipelines(
                 "filesrc location=\"{}\" ! {} ! videoconvert{} ! videorate ! {} ! appsink name=sink sync=true max-buffers=1 drop=true",
                 location, decoder, fit_stage, output_caps
             )
+        })
+        .collect()
+}
+
+fn filter_available_video_pipelines(descriptions: Vec<String>) -> Vec<String> {
+    descriptions
+        .into_iter()
+        .filter(|pipeline| {
+            if pipeline.contains("nvh264dec") && gst::ElementFactory::find("nvh264dec").is_none() {
+                return false;
+            }
+            if pipeline.contains("nvh265dec") && gst::ElementFactory::find("nvh265dec").is_none() {
+                return false;
+            }
+            if pipeline.contains("vaapih264dec") && gst::ElementFactory::find("vaapih264dec").is_none() {
+                return false;
+            }
+            if pipeline.contains("vulkanh264dec") && gst::ElementFactory::find("vulkanh264dec").is_none() {
+                return false;
+            }
+            true
         })
         .collect()
 }
@@ -1248,13 +1271,15 @@ mod tests {
             FitMode::Cover,
         );
 
-        assert_eq!(descriptions.len(), 8);
-        assert!(descriptions[..4]
+        assert_eq!(descriptions.len(), 10);
+        assert!(descriptions[..5]
             .iter()
             .all(|pipeline| pipeline.contains("aspectratiocrop aspect-ratio=1920/1080")));
-        assert!(descriptions[4..]
+        assert!(descriptions[5..]
             .iter()
             .all(|pipeline| !pipeline.contains("aspectratiocrop")));
+        assert!(descriptions.iter().any(|pipeline| pipeline.contains("nvh264dec")));
+        assert!(descriptions.iter().any(|pipeline| pipeline.contains("nvh265dec")));
     }
 
     #[test]
